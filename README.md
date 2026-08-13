@@ -2,9 +2,10 @@
 
 A data collection platform for Solana memecoins.
 
-**Phase 0 — project foundation.** The system currently starts, connects to
-PostgreSQL, applies migrations and reports its real state over HTTP. It does not
-yet discover tokens, collect market data, or track outcomes.
+**Phase 1 — token discovery.** The system discovers new Solana tokens from a
+live feed, validates them, and stores them without duplicates — currently
+detecting tokens 80-90 seconds after their pool is created. It does not yet
+collect market data or track outcomes.
 
 It buys nothing and sells nothing, and is structurally incapable of doing so:
 no wallet, no signer, no private keys, no transaction-submitting dependency.
@@ -48,24 +49,37 @@ Check that it is actually working:
 curl -s localhost:8000/status | python -m json.tool
 ```
 
-A healthy response reports a live database round-trip and the applied migration
-revision:
+A healthy response reports a live database round-trip, the applied migration
+revision, and measured discovery state:
 
 ```json
 {
   "status": "healthy",
-  "version": "0.1.0",
-  "environment": "development",
-  "phase": 0,
-  "uptime_seconds": 12.4,
+  "version": "0.2.0",
+  "phase": 1,
   "database": {
     "connected": true,
-    "latency_ms": 1.31,
-    "migration_revision": "0001",
+    "latency_ms": 10.8,
+    "migration_revision": "0002",
     "error": null
   },
+  "discovery": {
+    "enabled": true,
+    "scheduler_running": true,
+    "interval_seconds": 30.0,
+    "tokens_discovered": 146,
+    "last_discovery_at": "2026-08-13T20:51:32.779836Z",
+    "last_run": {
+      "provider": "geckoterminal",
+      "fetched": 20, "valid": 20, "rejected": 0,
+      "inserted": 0, "duplicates": 20, "error": null
+    },
+    "providers": {
+      "geckoterminal": {"status": "healthy", "consecutive_failures": 0},
+      "dexscreener": {"status": "unknown", "consecutive_failures": 0}
+    }
+  },
   "pending_capabilities": [
-    "token_discovery (phase 1)",
     "market_snapshots (phase 2)",
     "outcome_tracking (phase 3)",
     "data_validation_report (phase 4)"
@@ -73,9 +87,28 @@ revision:
 }
 ```
 
-`/status` deliberately does not report `tokens_discovered`, `snapshots_collected`
-or a `providers` map. Those components do not exist yet, and reporting zeros for
-them would be fabricated telemetry.
+Two details worth reading carefully, because both are deliberate:
+
+`dexscreener` reports `unknown`, not `healthy`. The fallback only runs when the
+primary fails, so it has genuinely never been attempted — and a provider is
+never marked healthy without checking it.
+
+`tokens_discovered` is `null`, never `0`, when the database is unreachable. Zero
+would mean "no tokens found"; null means "we could not look". `/status` still
+reports no `snapshots_collected`, because nothing collects them yet.
+
+## Data sources
+
+One primary, one fallback, then the database — chosen by probing candidates live
+rather than by assumption (`scripts/probe-providers.sh`).
+
+| Role | Source | Supplies |
+|---|---|---|
+| Primary | GeckoTerminal `new_pools` | Address, symbol, pool address, pool creation time |
+| Fallback | DexScreener `token-profiles` | Address only; symbol and pool age stay NULL |
+
+The fallback exists so discovery continues during a primary outage. It is not a
+claim that both sources see the same tokens.
 
 ## Endpoints
 
@@ -113,17 +146,19 @@ TEST_DATABASE_URL=postgresql+asyncpg://hades:PASSWORD@127.0.0.1:5432/hades pytes
 src/hades/
   api/            FastAPI application, routes, request-scoped state
   config/         settings loaded from the environment
-  database/       async engine, session factory, connectivity probes
+  database/       async engine, session factory, ORM models
+  discovery/      providers, validation, persistence, service, scheduler
   observability/  structured logging
   clock.py        the single source of "now", always UTC
 migrations/       alembic revisions
 tests/            unit tests, plus integration tests behind a marker
+scripts/          provisioning, verification, provider probing
 docker/           Dockerfile
 docs/             architecture, operations, known issues
 ```
 
-Directories for `discovery/`, `market_data/`, `snapshots/` and `outcomes/` are
-absent on purpose. They are created by the phase that implements them.
+Directories for `market_data/`, `snapshots/` and `outcomes/` are absent on
+purpose. They are created by the phase that implements them.
 
 ## Documentation
 
