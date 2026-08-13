@@ -6,21 +6,19 @@ they are talking to.
 """
 
 import asyncio
-from collections.abc import Iterable
 
 from alembic import context
 from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+# Importing hades.database.models registers every ORM table on Base.metadata.
+# All models live in that one module precisely so autogenerate can never miss a
+# table because someone forgot to add an import here.
+import hades.database.models  # noqa: F401 — imported for its side effect
 from hades.config.settings import get_settings
 from hades.database.base import Base
 from hades.database.engine import create_engine
 from hades.observability.logging import configure_logging, get_logger
-
-# Import every module defining ORM models here so that `alembic revision
-# --autogenerate` can see them. Phase 0 defines none; Phase 1 adds the token
-# model and this list grows with it.
-_MODEL_MODULES: Iterable[str] = ()
 
 target_metadata = Base.metadata
 

@@ -6,15 +6,14 @@ from fastapi.testclient import TestClient
 from hades.api.routes import health as health_route
 from hades.database.engine import DatabaseHealth
 
-# Fields task.md §11 sketches for a later phase. Reporting them now — even as
-# zeros — would be fabricated telemetry (task.md §20).
+# Fields task.md §11 sketches for phases that do not exist yet. Reporting them
+# now — even as zeros — would be fabricated telemetry (task.md §20).
+# tokens_discovered and last_discovery_at moved out of this list in Phase 1,
+# when real components started producing them.
 FUTURE_PHASE_FIELDS = (
-    "tokens_discovered",
     "tokens_tracked",
     "snapshots_collected",
-    "last_discovery_at",
     "last_snapshot_at",
-    "providers",
 )
 
 
@@ -40,12 +39,33 @@ def test_status_reports_the_real_database_failure(client: TestClient) -> None:
 
 def test_status_omits_capabilities_that_do_not_exist_yet(client: TestClient) -> None:
     body = client.get("/status").json()
+    flattened = {**body, **body["discovery"]}
 
     for field in FUTURE_PHASE_FIELDS:
-        assert field not in body, f"{field} reported before its phase exists"
+        assert field not in flattened, f"{field} reported before its phase exists"
 
-    assert body["phase"] == 0
+    assert body["phase"] == 1
     assert body["pending_capabilities"]
+
+
+def test_status_reports_token_count_as_null_when_the_database_is_down(
+    client: TestClient,
+) -> None:
+    """A count we cannot measure is null, never 0. Zero would mean 'no tokens'."""
+    discovery = client.get("/status").json()["discovery"]
+
+    assert discovery["tokens_discovered"] is None
+    assert discovery["last_discovery_at"] is None
+
+
+def test_status_reports_discovery_as_disabled_rather_than_idle(client: TestClient) -> None:
+    """The test fixture disables discovery; that must be distinguishable."""
+    discovery = client.get("/status").json()["discovery"]
+
+    assert discovery["enabled"] is False
+    assert discovery["scheduler_running"] is False
+    assert discovery["last_run"] is None
+    assert discovery["providers"] == {}
 
 
 def test_health_reports_healthy_when_the_probe_succeeds(

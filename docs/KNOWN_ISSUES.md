@@ -7,28 +7,48 @@ Format per task.md §21: Problem, Impact, Root cause, Current status, Next actio
 
 ---
 
-## 1. No provider has been chosen for Phase 1
+## 1. The fallback provider is not equivalent to the primary
 
-**Problem.** Phase 1 requires one primary and one fallback data source for token
-discovery, and none has been selected or validated.
+**Problem.** DexScreener's `/token-profiles/latest/v1` yields a token address
+and nothing else. When the primary is down, discovery continues but stores rows
+with NULL symbol, name and `first_seen_at`.
 
-**Impact.** Phase 1 cannot start. This is the single blocking decision.
+**Impact.** Tokens discovered during a GeckoTerminal outage carry no age
+information, and `first_seen_at` is the field the research phases need most —
+token age at detection is a core feature.
 
-**Root cause.** Not a defect — the decision was deliberately deferred rather
-than inherited from v1. v1's provider set was the largest source of its
-operational fragility.
+**Root cause.** No second free endpoint was found that supplies both new-token
+discovery and pool creation time. `/latest/dex/search` was rejected for this
+role: probing showed it is a cross-chain text search whose first result was a
+Base pool, not a Solana discovery feed.
 
-**Current status.** Open. Evidence carried over from v1, to be re-validated
-against live endpoints rather than trusted:
-- Pump.fun supplied 98.6% of discovered tokens in a 24-hour sample (2,122 of
-  2,156); Raydium supplied 31; DexScreener and Orca supplied ~0.
-- DexScreener served price reliably, batching 30 mints per request and selecting
-  the highest-liquidity pool per mint, since thin pools quote badly.
-- Jupiter retired `quote-api.jup.ag` mid-flight; the host stopped resolving and
-  the dependent check failed silently.
+**Current status.** Accepted, and visible rather than hidden — the provider that
+discovered each token is stored in `discovery_provider`, so rows collected
+during a fallback window can be identified and, if needed, backfilled.
 
-**Next action.** Probe candidate endpoints directly, measure real response
-schemas and rate limits, and record the findings before writing an adapter.
+**Next action.** In Phase 2, when market snapshots start calling GeckoTerminal
+per token anyway, backfill `first_seen_at` for rows discovered by the fallback.
+
+---
+
+## 1b. Rejected tokens are logged but not stored
+
+**Problem.** Validation rejections are emitted as structured log events with a
+machine-readable reason, but nothing persists them.
+
+**Impact.** task.md §18 Phase 4 asks "how many records were rejected?". That
+question currently requires log aggregation rather than a query, and log
+retention is 10 MB × 3 files per container.
+
+**Root cause.** Deliberate. A `discovery_rejections` table is Phase 4's job, and
+creating it now would be building ahead of the phase.
+
+**Current status.** Accepted for Phase 1. Every rejection carries its reason as
+a `RejectionReason` enum value, so the data model for that table already exists
+and is exercised.
+
+**Next action.** Add the table in Phase 4 alongside the report that reads it,
+with a retention policy from day one.
 
 ---
 

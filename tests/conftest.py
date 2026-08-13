@@ -34,6 +34,10 @@ def settings() -> Settings:
         database_url=UNREACHABLE_DSN,
         log_format="console",
         log_level="DEBUG",
+        # The unit suite must never touch the live network. Discovery is
+        # exercised through stubs in test_discovery_service.py and through
+        # captured fixtures in test_providers.py.
+        discovery_enabled=False,
     )
 
 

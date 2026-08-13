@@ -3,6 +3,60 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is phase-driven: the minor version tracks the completed phase.
 
+## [0.2.0] — 2026-08-13
+
+Phase 1 — token discovery.
+
+### Provider selection
+
+Candidate endpoints were probed live before any adapter was written
+(`scripts/probe-providers.sh`), because task.md §20 forbids assuming how an API
+responds. The probe found that **two of the sources Hades v1 depended on are
+dead**: Pump.fun's `frontend-api` returns Cloudflare 530, and both Jupiter token
+endpoints are gone (404, and a host that no longer resolves). Pump.fun had
+supplied 98.6% of v1's discovered tokens.
+
+- **Primary: GeckoTerminal** `/networks/solana/new_pools` — 20 pools in 0.50s,
+  carrying pool creation time, price, FDV, price changes and per-window
+  buys/sells/buyers/sellers. Free, no API key.
+- **Fallback: DexScreener** `/token-profiles/latest/v1` — 0.23s, Solana entries
+  filtered from a cross-chain feed. Deliberately lower fidelity: it yields an
+  address only, so symbol, name and pool age are stored as NULL rather than
+  guessed. It exists so discovery continues when the primary is down, not as a
+  claim that both sources see the same tokens.
+
+### Added
+
+- `tokens` table (migration `0002`) with a unique constraint on
+  `token_address`. Discovery inserts with `ON CONFLICT DO NOTHING`, so repeated
+  processing cannot create duplicate rows — enforced by the database, not by a
+  check-then-insert race.
+- Discovery service running ONE PRIMARY -> ONE FALLBACK -> DATABASE. The
+  fallback is tried only when the primary fails.
+- Per-provider health that starts as `unknown` and only becomes `healthy` after
+  an attempt actually succeeded, with consecutive-failure counting.
+- Explicit validation rejecting empty and non-base58 addresses, oversized
+  symbols and names, naive timestamps and pool times in the future. Every
+  rejection carries a machine-readable reason for the Phase 4 report.
+- Bounded retry honouring `Retry-After`, retrying only 429 and transient 5xx.
+  A 404 is never retried. Every failure is attributable: provider, endpoint,
+  error type, status code, retry count.
+- Explicit `httpx.Limits` and timeouts on the shared client.
+- Background scheduler on a fixed interval that survives provider outages,
+  database blips and unanticipated bugs without dying.
+- `/status` now reports real `tokens_discovered` and `last_discovery_at` read
+  from the database (so they survive a restart), scheduler state, per-provider
+  health, and the outcome of the last run.
+- 26 further tests, including parsers driven by responses captured from the
+  live endpoints rather than invented shapes.
+
+### Changed
+
+- `tokens_discovered` and `last_discovery_at` moved out of
+  `pending_capabilities` now that real components produce them.
+- A count that cannot be measured is reported as `null`, never `0`. Zero would
+  mean "no tokens found"; null means "we could not look".
+
 ## [0.1.0] — 2026-08-13
 
 Phase 0 — project foundation.

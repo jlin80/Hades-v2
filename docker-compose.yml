@@ -42,7 +42,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: hades-v2:${HADES_IMAGE_TAG:-0.1.0}
+    image: hades-v2:${HADES_IMAGE_TAG:-0.2.0}
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     environment:
@@ -62,7 +62,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: hades-v2:${HADES_IMAGE_TAG:-0.1.0}
+    image: hades-v2:${HADES_IMAGE_TAG:-0.2.0}
     restart: unless-stopped
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -74,6 +74,17 @@ services:
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
       DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-10}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Phase 1: token discovery
+      DISCOVERY_ENABLED: ${DISCOVERY_ENABLED:-true}
+      DISCOVERY_INTERVAL_SECONDS: ${DISCOVERY_INTERVAL_SECONDS:-30}
+      PRIMARY_PROVIDER_ENABLED: ${PRIMARY_PROVIDER_ENABLED:-true}
+      FALLBACK_PROVIDER_ENABLED: ${FALLBACK_PROVIDER_ENABLED:-true}
+      GECKOTERMINAL_BASE_URL: ${GECKOTERMINAL_BASE_URL:-https://api.geckoterminal.com/api/v2}
+      DEXSCREENER_BASE_URL: ${DEXSCREENER_BASE_URL:-https://api.dexscreener.com}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-10}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      HTTP_MAX_CONNECTIONS: ${HTTP_MAX_CONNECTIONS:-10}
+      HTTP_MAX_KEEPALIVE_CONNECTIONS: ${HTTP_MAX_KEEPALIVE_CONNECTIONS:-5}
     ports:
       - "${API_PUBLISHED_PORT:-8000}:8000"
     depends_on:

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hades-v2"
-version = "0.1.0"
-description = "Solana memecoin data collection platform. Phase 0 — project foundation."
+version = "0.2.0"
+description = "Solana memecoin data collection platform. Phase 1 — token discovery."
 requires-python = ">=3.12"
 readme = "README.md"
 
@@ -21,16 +21,15 @@ dependencies = [
     "pydantic>=2.10,<3.0",
     "pydantic-settings>=2.7,<3.0",
     "structlog>=24.4,<26.0",
+    # Phase 1. One HTTP library for runtime and tests; starlette's TestClient
+    # requires httpx2 specifically, so using it everywhere avoids shipping two.
+    "httpx2>=2.10,<3.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3,<9.0",
     "pytest-asyncio>=0.25,<2.0",
-    # starlette's TestClient deprecated httpx 0.x in favour of httpx2; using the
-    # old one raises StarletteDeprecationWarning, which the warnings-as-errors
-    # gate correctly turns into a failure.
-    "httpx2>=2.10,<3.0",
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
 ]
@@ -76,7 +75,7 @@ ignore = [
 "migrations/**" = ["N999", "S101"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["hades"]
+known-first-party = ["hades", "tests"]
 
 # -----------------------------------------------------------------------------
 # MyPy — strict from day one. Hades v1 kept a clean strict gate across 459

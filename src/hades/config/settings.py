@@ -90,6 +90,65 @@ class Settings(BaseSettings):
     )
     api_port: int = Field(default=8000, ge=1, le=65535, description="Port the API binds to.")
 
+    # -- Phase 1: token discovery ---------------------------------------------
+    # These settings have consumers as of Phase 1. Before that they did not
+    # exist, deliberately.
+
+    discovery_enabled: bool = Field(
+        default=True,
+        description="Master switch for the background discovery loop.",
+    )
+    discovery_interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=3600,
+        description="Seconds between discovery runs.",
+    )
+
+    primary_provider_enabled: bool = Field(
+        default=True, description="Enable the primary discovery provider (GeckoTerminal)."
+    )
+    fallback_provider_enabled: bool = Field(
+        default=True, description="Enable the fallback discovery provider (DexScreener)."
+    )
+
+    # Provider endpoints are configuration, never constants. Jupiter retired
+    # quote-api.jup.ag mid-flight in v1 and the dependent check failed silently;
+    # a probe on 2026-08-13 confirmed that host still does not resolve.
+    geckoterminal_base_url: str = Field(
+        default="https://api.geckoterminal.com/api/v2",
+        description="Base URL of the primary provider.",
+    )
+    dexscreener_base_url: str = Field(
+        default="https://api.dexscreener.com",
+        description="Base URL of the fallback provider.",
+    )
+
+    http_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        description="Total timeout for a single outbound HTTP request.",
+    )
+    max_retries: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description="Retry attempts per request before a provider is considered failed.",
+    )
+    http_max_connections: int = Field(
+        default=10,
+        ge=1,
+        le=200,
+        description="Maximum simultaneous outbound HTTP connections.",
+    )
+    http_max_keepalive_connections: int = Field(
+        default=5,
+        ge=1,
+        le=200,
+        description="Maximum idle keep-alive connections retained in the pool.",
+    )
+
     @field_validator("database_url")
     @classmethod
     def _validate_database_url(cls, value: str) -> str:
