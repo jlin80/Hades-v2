@@ -75,6 +75,48 @@ else
     fail "database timezone is '${db_timezone}', expected UTC"
 fi
 
+section "Token discovery"
+token_count="$(psql_exec 'SELECT count(*) FROM tokens')"
+echo "  tokens stored: ${token_count}"
+
+status_tokens="$(echo "$status_body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["discovery"]["tokens_discovered"])')"
+if [ "$status_tokens" = "$token_count" ]; then
+    pass "/status token count matches the database"
+else
+    fail "/status reports ${status_tokens} tokens, database holds ${token_count}"
+fi
+
+# The unique constraint is what makes discovery idempotent (task.md §13).
+# Verify it exists rather than trusting the migration ran as intended.
+constraint="$(psql_exec "SELECT conname FROM pg_constraint WHERE conname = 'uq_tokens_token_address'")"
+if [ -n "$constraint" ]; then
+    pass "unique constraint on token_address is present"
+else
+    fail "uq_tokens_token_address is MISSING — duplicates are possible"
+fi
+
+duplicates="$(psql_exec 'SELECT count(*) FROM (SELECT token_address FROM tokens GROUP BY token_address HAVING count(*) > 1) d')"
+if [ "$duplicates" = "0" ]; then
+    pass "no duplicate token addresses stored"
+else
+    fail "${duplicates} token addresses appear more than once"
+fi
+
+# Every stored address must be base58. A non-base58 address means validation
+# was bypassed somewhere.
+bad_addresses="$(psql_exec "SELECT count(*) FROM tokens WHERE token_address !~ '^[1-9A-HJ-NP-Za-km-z]{32,44}\$'")"
+if [ "$bad_addresses" = "0" ]; then
+    pass "every stored address is a valid base58 Solana address"
+else
+    fail "${bad_addresses} stored addresses are not valid base58"
+fi
+
+if [ "$token_count" != "0" ]; then
+    echo "  most recent discoveries:"
+    psql_exec "SELECT token_address || '  ' || coalesce(symbol,'(no symbol)') || '  age=' || coalesce((extract(epoch from (discovered_at - first_seen_at))::int)::text || 's', 'unknown') || '  via ' || discovery_provider FROM tokens ORDER BY discovered_at DESC LIMIT 5" \
+        | sed 's/^/    /'
+fi
+
 section "Log format"
 # Every application log line must be a single JSON object. An unparseable line
 # means something is bypassing the structured pipeline.
