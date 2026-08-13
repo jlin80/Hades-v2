@@ -1,0 +1,110 @@
+# Hades V2 — Phase 0 stack.
+#
+# Three services and nothing else: PostgreSQL, a one-shot migration runner, and
+# the API. No Redis, no message broker, no Prometheus, no Grafana. Each of those
+# arrives only when a phase demonstrates a concrete need for it (task.md §4).
+#
+# Images are pinned to explicit versions rather than :latest so that a rebuild
+# months from now produces the same stack.
+
+name: hades-v2
+
+services:
+  postgres:
+    image: postgres:17.2-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      # Deterministic initdb: the database is created with UTC and C collation
+      # so that timestamp and ordering behaviour does not depend on the host.
+      PGTZ: UTC
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Bound to loopback only. The database is never published to the LAN;
+      # reach it through an SSH tunnel when you need psql from a workstation.
+      - "127.0.0.1:${POSTGRES_PUBLISHED_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  # One-shot. Runs to completion before the API is allowed to start, so the API
+  # can never serve traffic against an un-migrated schema.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: hades-v2:${HADES_IMAGE_TAG:-0.1.0}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: hades-v2:${HADES_IMAGE_TAG:-0.1.0}
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-10}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "${API_PUBLISHED_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Hits the real endpoint, which runs a real SELECT 1. The container is
+      # reported unhealthy when the database is unreachable, not merely when
+      # the process has died.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5) as r:
+                  sys.exit(0 if r.status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  pgdata:
+    name: hades-v2-pgdata

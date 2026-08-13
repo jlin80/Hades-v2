@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hades-v2"
+version = "0.1.0"
+description = "Solana memecoin data collection platform. Phase 0 — project foundation."
+requires-python = ">=3.12"
+readme = "README.md"
+
+# Dependencies are pinned to a compatible-release range. Phase 0 deliberately
+# carries no HTTP client, no Redis, no message broker and no ML stack: nothing
+# is added until a phase actually needs it.
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32,<1.0",
+    "sqlalchemy[asyncio]>=2.0.36,<3.0",
+    "asyncpg>=0.30,<1.0",
+    "alembic>=1.14,<2.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.7,<3.0",
+    "structlog>=24.4,<26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<2.0",
+    # starlette's TestClient deprecated httpx 0.x in favour of httpx2; using the
+    # old one raises StarletteDeprecationWarning, which the warnings-as-errors
+    # gate correctly turns into a failure.
+    "httpx2>=2.10,<3.0",
+    "ruff>=0.8,<1.0",
+    "mypy>=1.13,<2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hades"]
+
+# -----------------------------------------------------------------------------
+# Ruff
+# -----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez  -- enforces timezone-aware datetimes (task.md §14)
+    "T20",  # flake8-print      -- no stray print(); use structured logging
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "ASYNC",# flake8-async
+    "S",    # flake8-bandit
+    "BLE",  # flake8-blind-except -- bans bare `except Exception` (task.md §10)
+    "TRY",  # tryceratops         -- enforces sane exception handling
+]
+ignore = [
+    "TRY003",  # long messages outside exception class: acceptable here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may use assert (S101) and hardcoded throwaway credentials (S105/S106).
+"tests/**" = ["S101", "S105", "S106"]
+# Alembic generates its own conventions.
+"migrations/**" = ["N999", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hades"]
+
+# -----------------------------------------------------------------------------
+# MyPy — strict from day one. Hades v1 kept a clean strict gate across 459
+# files; that discipline was one of the few things that unambiguously worked.
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_return_any = true
+disallow_any_generics = true
+no_implicit_reexport = true
+show_error_codes = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["alembic.*"]
+ignore_missing_imports = true
+
+# -----------------------------------------------------------------------------
+# Pytest
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --strict-config"
+# Warnings are errors. A DeprecationWarning that nobody reads is how a silent
+# provider/schema change slips into production.
+filterwarnings = ["error"]
+markers = [
+    "integration: requires a live PostgreSQL instance (DATABASE_URL must be set)",
+]
