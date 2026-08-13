@@ -30,10 +30,33 @@ Phase 0 — project foundation.
   health, and the API gated on migration success.
 - `scripts/provision-ct.sh`, which asserts Docker uses `overlay2` and fails
   loudly on `vfs`.
+- `scripts/bootstrap-env.sh`, generating a `.env` with a random database
+  password and refusing to overwrite an existing one.
+- `scripts/verify-deployment.sh`, checking a running stack against reality:
+  HTTP contract, `alembic_version` agreement between the database and `/status`,
+  database timezone, JSON log parseability, absence of the password from logs,
+  and the Docker storage driver.
+- `scripts/run-tests-against-stack.sh`, running the full suite against the
+  deployment's real PostgreSQL from a throwaway container.
 - 28 tests: configuration contract, UTC handling, logging, health endpoints,
   live-database integration, and a structural guard proving the project cannot
   execute a financial operation.
 - Documentation: README, ARCHITECTURE, OPERATING, KNOWN_ISSUES.
+
+### Verified
+
+Deployed to Proxmox CT 204 (`192.168.100.44`) and validated against reality, not
+assumption:
+
+- `docker compose up -d --build` brings the stack up with the intended gating:
+  PostgreSQL healthy, then `migrate` run to completion, then `api`.
+- `/status` reports a live database round-trip and revision `0001`, matching the
+  `alembic_version` row read directly from PostgreSQL.
+- All 28 tests pass against the deployment's real database, integration tests
+  included.
+- The container survives a full host reboot: both services return automatically
+  and the database volume, its data and the applied revision persist.
+- Docker uses `overlay2`; the stack occupies 1.2 GB of 32 GB.
 
 ### Deliberately not added
 
