@@ -49,8 +49,32 @@ def test_status_returns_null_counters_not_zero_when_database_is_down(
 
 def test_status_declares_which_metrics_do_not_exist_yet(client: TestClient) -> None:
     body = client.get("/status").json()
-    assert body["phase"] == 2
+    assert body["phase"] == 3
     assert set(body["not_implemented"]) == set(NOT_IMPLEMENTED_METRICS)
+
+
+def test_tracking_publishes_its_own_capacity_arithmetic(client: TestClient) -> None:
+    """The budget has to be inspectable, not folded into a constant.
+
+    Tracking every token would need 64x-146x the primary's measured capacity,
+    so the concurrency limit *is* the design. Surfacing the implied request
+    rate is what makes raising that limit a visible decision.
+    """
+    tracking = client.get("/status").json()["tracking"]
+    assert tracking["enabled"] is False
+    assert tracking["running"] is False
+    assert tracking["max_concurrent"] == 40
+    assert tracking["retire_after_seconds"] == 3600.0
+    assert tracking["snapshots_per_token"] == 110.0
+    assert tracking["estimated_requests_per_second"] < 1.64
+
+
+def test_tracking_counters_are_null_not_zero_when_the_database_is_down(
+    client: TestClient,
+) -> None:
+    body = client.get("/status").json()["tracking"]
+    assert body["snapshots_total"] is None
+    assert body["eligible_waiting"] is None
 
 
 def test_discovery_reports_configured_and_running_separately(client: TestClient) -> None:

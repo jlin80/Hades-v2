@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, field_validator
+from pydantic import Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -66,6 +66,43 @@ class Settings(BaseSettings):
     # and without a budget they occupy the queue forever.
     discovery_backfill_max_attempts: int = Field(default=5, ge=1, le=50)
 
+    # --- Tracking (Phase 3) --------------------------------------------------
+    tracking_enabled: bool = False
+    # The binding constraint, and it is not a preference. Measured: the primary
+    # sustains 1.64 req/s while Pump.fun creates 0.24-0.55 tokens/s, and the
+    # spec's schedule costs 434 snapshots per token per day -- tracking every
+    # token would need 104-239 req/s, 64x to 146x over capacity. So the system
+    # tracks a bounded sample. 40 concurrent tokens over a 1h horizon works out
+    # to roughly 1.2 req/s; `/status` reports the estimate so the arithmetic is
+    # visible rather than folded into a magic number.
+    tracking_max_concurrent: int = Field(default=40, ge=1, le=5000)
+    tracking_batch_size: int = Field(default=20, ge=1, le=200)
+    tracking_pass_interval_seconds: float = Field(default=2.0, gt=0)
+    # Spacing inside a batch. The primary's limit is unpublished and is the
+    # largest technical risk in the project; a batch fired at once is the shape
+    # most likely to find the ceiling.
+    tracking_request_spacing_seconds: float = Field(default=0.2, ge=0)
+    # Spec §13: data older than this is stale. Recorded on the snapshot rather
+    # than applied at read time, so changing the threshold cannot rewrite what
+    # was already observed.
+    tracking_stale_after_seconds: float = Field(default=60.0, gt=0)
+    tracking_max_snapshot_failures: int = Field(default=3, ge=1, le=20)
+    tracking_failure_retry_seconds: float = Field(default=30.0, gt=0)
+
+    # Schedule (spec §8). Exact values configurable, as required.
+    early_tracking_seconds: float = Field(default=300.0, gt=0)
+    early_snapshot_interval_seconds: float = Field(default=10.0, gt=0)
+    medium_tracking_seconds: float = Field(default=1800.0, gt=0)
+    medium_snapshot_interval_seconds: float = Field(default=30.0, gt=0)
+    normal_tracking_seconds: float = Field(default=7200.0, gt=0)
+    normal_snapshot_interval_seconds: float = Field(default=60.0, gt=0)
+    long_term_snapshot_interval_seconds: float = Field(default=300.0, gt=0)
+    # One hour: covers every outcome horizon spec §15 asks for (return_1m
+    # through return_1h) at 110 snapshots per token, which the budget affords
+    # for ~785 tokens/day. A 24h horizon costs 4x per token and buys nothing
+    # §15 currently asks for.
+    tracking_retire_after_seconds: float = Field(default=3600.0, gt=0)
+
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)
     provider_max_connections: int = Field(default=10, ge=1, le=100)
@@ -80,6 +117,28 @@ class Settings(BaseSettings):
             )
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _tiers_must_be_ordered(self) -> Settings:
+        """Tier boundaries must increase, or a tier silently never applies.
+
+        A MEDIUM boundary below the EARLY one does not error anywhere: it just
+        means no token is ever in the medium tier, and the dataset quietly has
+        a sampling rate nobody chose.
+        """
+        if not (
+            self.early_tracking_seconds
+            < self.medium_tracking_seconds
+            < self.normal_tracking_seconds
+        ):
+            msg = (
+                "tracking tier boundaries must increase: "
+                f"early={self.early_tracking_seconds} < "
+                f"medium={self.medium_tracking_seconds} < "
+                f"normal={self.normal_tracking_seconds}"
+            )
+            raise ValueError(msg)
+        return self
 
     @property
     def is_test(self) -> bool:

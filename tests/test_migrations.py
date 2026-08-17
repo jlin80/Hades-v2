@@ -106,11 +106,11 @@ def execute(dsn: str, statement: str, params: dict[str, Any] | None = None) -> N
 def test_upgrade_to_head_creates_the_expected_schema(migration_dsn: str) -> None:
     command.upgrade(alembic_config(), "head")
 
-    assert "tokens" in table_names(migration_dsn)
-    columns = table_columns(migration_dsn, "tokens")
+    assert {"tokens", "market_snapshots"} <= table_names(migration_dsn)
+
     # Every column §7 of the spec requires of a discovered token, plus the
-    # on-chain reference added in 0002.
-    assert columns == {
+    # on-chain reference (0002), the retry budget (0003) and tracking (0004).
+    assert table_columns(migration_dsn, "tokens") == {
         "id",
         "token_address",
         "symbol",
@@ -123,6 +123,44 @@ def test_upgrade_to_head_creates_the_expected_schema(migration_dsn: str) -> None
         "updated_at",
         "raw_provider_reference",
         "backfill_attempts",
+        "tracking_started_at",
+        "next_snapshot_at",
+        "last_snapshot_at",
+        "snapshot_count",
+        "snapshot_failures",
+    }
+
+    # Spec §9's metric list, minus what no free source supplies, plus full
+    # provenance. The raw curve reserves are the primary record; price,
+    # market cap and liquidity derive from them.
+    assert table_columns(migration_dsn, "market_snapshots") == {
+        "id",
+        "token_id",
+        "token_address",
+        "provider_name",
+        "provider_updated_at",
+        "observed_at",
+        "received_at",
+        "stored_at",
+        "token_age_seconds",
+        "tier",
+        "virtual_sol_reserves",
+        "virtual_token_reserves",
+        "real_sol_reserves",
+        "real_token_reserves",
+        "total_supply",
+        "base_decimals",
+        "quote_decimals",
+        "price_sol",
+        "market_cap_sol",
+        "liquidity_sol",
+        "market_cap_usd",
+        "sol_price_usd",
+        "is_complete",
+        "last_trade_at",
+        "reply_count",
+        "provider_data_age_seconds",
+        "is_stale",
     }
 
 
@@ -170,10 +208,13 @@ def test_downgrade_then_upgrade_round_trips(migration_dsn: str) -> None:
     assert "tokens" in table_names(migration_dsn)
 
     command.downgrade(config, "base")
-    assert "tokens" not in table_names(migration_dsn)
+    names = table_names(migration_dsn)
+    assert "tokens" not in names
+    assert "market_snapshots" not in names
 
     command.upgrade(config, "head")
     assert "raw_provider_reference" in table_columns(migration_dsn, "tokens")
+    assert "market_snapshots" in table_names(migration_dsn)
 
 
 def test_stepwise_upgrade_matches_a_direct_one(migration_dsn: str) -> None:

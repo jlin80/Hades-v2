@@ -12,19 +12,20 @@ mistakes and reusable decisions — not a codebase to port. See `docs/DECISIONS.
 
 ## Status
 
-**Phases 0–2 complete.** Phases advance only when the current one passes its gate;
-nothing beyond Phase 2 is built.
+**Phases 0–3 complete.** Phases advance only when the current one passes its gate;
+nothing beyond Phase 3 is built.
 
-Discovery is **off by default** (`HADES_DISCOVERY_ENABLED=false`): starting the API must
-never begin writing to the database as a side effect.
+Discovery and tracking are both **off by default** (`HADES_DISCOVERY_ENABLED`,
+`HADES_TRACKING_ENABLED`): starting the API must never begin writing to the database as a
+side effect.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Repo, config, PostgreSQL, Alembic, Docker, logging, FastAPI, health/status, tests | ✅ |
 | 1 | Verify real data sources → [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | ✅ |
 | 2 | Token discovery — discover, validate, persist, deduplicate, recover | ✅ |
-| 3 | Snapshot tracking | ⬜ next |
-| 4 | Feature engine | ⬜ |
+| 3 | Adaptive snapshot tracking, persistence, validation, stale detection | ✅ |
+| 4 | Feature engine | ⬜ next |
 | 5 | Signal research (one hypothesis) | ⬜ |
 | 6 | Paper trading | ⬜ |
 | 7 | Outcome + analytics | ⬜ |
@@ -88,6 +89,22 @@ discovery latency **2404 ms**. Reproduce with:
 ```
 
 That writes to a throwaway SQLite file, never to Postgres.
+
+## Tracking
+
+Snapshots on an age-adaptive schedule (10s for the first 5 min, then 30s, then 60s),
+storing raw bonding-curve reserves as the primary record and deriving price, market cap
+and liquidity from them — verified against the provider's own figure to five decimals.
+
+**Tracking the whole universe is impossible by ~100x.** The primary sustains 1.64 req/s;
+Pump.fun creates 0.24–0.55 tokens/s; the schedule costs 434 snapshots per token per day.
+So the system tracks a bounded sample — 40 concurrent tokens over a one-hour horizon,
+about 1.2 req/s — and `/status` reports `eligible_waiting`, the sample it is declining to
+take. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D13.
+
+```bash
+.venv/Scripts/python scripts/run_tracking_smoke.py 150
+```
 
 ## Safety
 

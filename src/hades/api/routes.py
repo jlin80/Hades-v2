@@ -13,19 +13,26 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from hades import __version__
-from hades.api.schemas import DatabaseStatus, DiscoveryStatus, HealthResponse, StatusResponse
+from hades.api.schemas import (
+    DatabaseStatus,
+    DiscoveryStatus,
+    HealthResponse,
+    StatusResponse,
+    TrackingStatus,
+)
 from hades.config import Settings
 from hades.db.engine import Database, DatabaseHealth
 from hades.db.models import TokenState
 from hades.discovery.repository import TokenRepository
 from hades.discovery.runtime import DiscoveryRuntime
+from hades.tracking.repository import TrackingRepository
+from hades.tracking.runtime import TrackingRuntime, schedule_from_settings
 
 router = APIRouter(tags=["observability"])
 
 # Counters whose producing phase does not exist yet. Named explicitly so the
 # payload states its own incompleteness instead of implying zeros.
 NOT_IMPLEMENTED_METRICS = (
-    "snapshots_total",
     "signals_total",
     "paper_trades",
 )
@@ -43,6 +50,11 @@ def get_settings(request: Request) -> Settings:
 
 def get_discovery(request: Request) -> DiscoveryRuntime:
     runtime: DiscoveryRuntime = request.app.state.discovery
+    return runtime
+
+
+def get_tracking(request: Request) -> TrackingRuntime:
+    runtime: TrackingRuntime = request.app.state.tracking
     return runtime
 
 
@@ -74,6 +86,7 @@ async def status(
     database: Annotated[Database, Depends(get_database)],
     settings: Annotated[Settings, Depends(get_settings)],
     discovery: Annotated[DiscoveryRuntime, Depends(get_discovery)],
+    tracking: Annotated[TrackingRuntime, Depends(get_tracking)],
 ) -> StatusResponse:
     db_health = await database.check_health()
 
@@ -82,6 +95,20 @@ async def status(
         running=discovery.is_running,
         last_error=discovery.last_error,
         counters=discovery.counters,
+    )
+
+    schedule = schedule_from_settings(settings)
+    tracking_status = TrackingStatus(
+        enabled=settings.tracking_enabled,
+        running=tracking.is_running,
+        last_error=tracking.last_error,
+        counters=tracking.counters,
+        max_concurrent=settings.tracking_max_concurrent,
+        retire_after_seconds=schedule.retire_after_seconds,
+        snapshots_per_token=round(schedule.snapshots_per_token(), 1),
+        estimated_requests_per_second=round(
+            schedule.estimated_requests_per_second(settings.tracking_max_concurrent), 3
+        ),
     )
 
     tokens_discovered: int | None = None
@@ -105,16 +132,32 @@ async def status(
                 }
             )
 
+            tracking_stats = await TrackingRepository(session, schedule).stats()
+            tracking_status = tracking_status.model_copy(
+                update={
+                    "tracking_now": tracking_stats.tracking_now,
+                    "eligible_waiting": tracking_stats.eligible_waiting,
+                    "snapshots_total": tracking_stats.snapshots_total,
+                    "snapshots_last_hour": tracking_stats.snapshots_last_hour,
+                    "stale_snapshots": tracking_stats.stale_snapshots,
+                    "tokens_retired": tracking_stats.tokens_retired,
+                    "tokens_migrated": tracking_stats.tokens_migrated,
+                    "tokens_dead": tracking_stats.tokens_dead,
+                    "oldest_due_seconds": tracking_stats.oldest_due_seconds,
+                }
+            )
+
     started_at: float = request.app.state.started_at
     return StatusResponse(
         status="healthy" if db_health.connected else "degraded",
         version=__version__,
         environment=settings.environment,
-        phase=2,
+        phase=3,
         uptime_seconds=round(time.monotonic() - started_at, 3),
         database=_to_schema(db_health),
         tokens_discovered=tokens_discovered,
         tokens_tracking=tokens_tracking,
         discovery=discovery_status,
+        tracking=tracking_status,
         not_implemented=list(NOT_IMPLEMENTED_METRICS),
     )

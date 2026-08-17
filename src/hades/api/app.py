@@ -20,6 +20,7 @@ from hades.config import Settings, load_settings
 from hades.db.engine import Database
 from hades.discovery.runtime import DiscoveryRuntime, build_service
 from hades.logging import configure_logging
+from hades.tracking.runtime import TrackingRuntime, build_tracking_service
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.discovery = discovery
         await discovery.start()
 
+        tracker = (
+            build_tracking_service(database, resolved)
+            if resolved.tracking_enabled and health.connected
+            else None
+        )
+        if resolved.tracking_enabled and not health.connected:
+            logger.error("tracking_not_started_database_unreachable")
+        tracking = TrackingRuntime(tracker)
+        app.state.tracking = tracking
+        await tracking.start()
+
         # A dead database is logged, not fatal: the process must stay up so
         # /health can *report* the outage. A crash loop reports nothing.
         try:
             yield
         finally:
+            await tracking.stop()
             await discovery.stop()
             await database.close()
             logger.info("shutdown")

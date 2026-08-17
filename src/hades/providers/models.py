@@ -97,3 +97,80 @@ class DiscoveredToken(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+
+class MarketSnapshot(BaseModel):
+    """One observation of a token's market state.
+
+    Two kinds of field live here, and the distinction is the point:
+
+    * **Raw curve state** — the reserves, exactly as the provider reported them.
+      These are the primary record. Everything below is a function of them.
+    * **Derived values** — price, market cap, liquidity. Stored because queries
+      need them, but reproducible from the raw fields with the formulas in
+      ``hades.tracking.derive``, so a formula error found later is fixable
+      against data already collected instead of poisoning it permanently.
+
+    Anything the provider does not supply is ``None``. Spec §9: never invent.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token_address: str
+    source: str
+
+    # Provenance (spec §9). Three timestamps, because they answer different
+    # questions: how old the provider says its data is, when we got it, and
+    # when it landed. The gap between the first two is what stale detection
+    # reads; the gap between the last two is our own latency.
+    provider_updated_at: datetime | None = None
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    received_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+    # Raw bonding-curve state, in base units exactly as reported.
+    virtual_sol_reserves: int | None = None
+    virtual_token_reserves: int | None = None
+    real_sol_reserves: int | None = None
+    real_token_reserves: int | None = None
+    total_supply: int | None = None
+    base_decimals: int | None = None
+    quote_decimals: int | None = None
+
+    # Derived. See hades.tracking.derive.
+    price_sol: float | None = None
+    market_cap_sol: float | None = None
+    liquidity_sol: float | None = None
+    market_cap_usd: float | None = None
+    sol_price_usd: float | None = None
+
+    # Reported directly by the provider.
+    is_complete: bool | None = None
+    last_trade_at: datetime | None = None
+    reply_count: int | None = None
+
+    # Present in spec §9 and deliberately absent from every free source we
+    # measured. Kept in the schema as NULL rather than dropped, so the gap is
+    # visible in the data instead of being an unexplained missing column.
+    #   volume, buy_volume, sell_volume, buy_count, sell_count,
+    #   transaction_count, unique_buyers, unique_sellers, holder_count
+    # bonding_curve_progress is also absent, for a different reason -- see
+    # docs/DATA_SOURCES.md. Its curve constants are not established for the
+    # current pump.fun program variant, and a wrong progress figure would
+    # silently poison a feature. The raw reserves make it computable later.
+
+    @field_validator("provider_updated_at", "observed_at", "received_at", "last_trade_at")
+    @classmethod
+    def _require_aware_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            msg = "timestamps must be timezone-aware"
+            raise ValueError(msg)
+        return value.astimezone(UTC)
+
+    @property
+    def provider_data_age_seconds(self) -> float | None:
+        """How stale the provider said its own data was when we read it."""
+        if self.provider_updated_at is None:
+            return None
+        return (self.observed_at - self.provider_updated_at).total_seconds()

@@ -178,6 +178,54 @@ a 2.4 s reading, so the mechanism mattered more than the magnitude — but the w
 request rate dropped from ~0.65/s of pure 404s to almost nothing, against a primary whose
 rate limit is unpublished and is our single largest technical risk.
 
+### D13 — Tracking is a bounded sample, and says so
+
+**Decision:** a hard concurrency limit on tracked tokens, a one-hour horizon, and
+`eligible_waiting` reported in `/status`.
+
+Not a safety margin — the arithmetic leaves no choice. The primary sustains 1.64 req/s,
+Pump.fun creates 0.24–0.55 tokens/s, and §8's schedule costs 434 snapshots per token per
+day: tracking everything needs **64x to 146x** the available capacity. Measured live at a
+capacity of 10, we tracked 10 tokens and declined 85.
+
+Three properties follow, and each is a deliberate trade:
+
+* **Admission is one-way.** A token keeps its slot until it ages out. Churning slots would
+  sample more tokens with truncated series, and a truncated series cannot answer a question
+  about the first minutes. Complete series for fewer tokens is the right side of that trade.
+* **Newest first.** At capacity the younger token is strictly more valuable: the older one
+  has already spent some of its early window unobserved.
+* **The bias is stated, not hidden.** Admitted tokens are the ones created when a slot
+  happened to be free. Close to random in time, but not a uniform sample, and research must
+  not treat it as one.
+
+`/status` publishes `snapshots_per_token` and `estimated_requests_per_second` alongside the
+limit, so raising the limit is a visible decision rather than an edit to a constant. There
+is a test asserting the default stays under the measured 1.64 req/s.
+
+### D14 — Store raw curve reserves; derive everything else
+
+**Decision:** `market_snapshots` keeps `virtual_sol_reserves`, `virtual_token_reserves`,
+`real_sol_reserves`, `real_token_reserves` and `total_supply` as the primary record. Price,
+market cap and liquidity are stored too, but as functions of those.
+
+Spec §11 requires the features behind a decision to stay intact and reproducible. Storing a
+provider's derived price would make that impossible, because there would be nothing to
+recompute *from* — a formula error found in six months would be fatal to everything
+collected before it, instead of fixable.
+
+The formulas are verified against the provider's own figure: for a live token our derived
+market cap matched pump.fun's to five decimal places. A decimals mistake is off by a factor
+of a thousand and cannot agree by accident, which is what makes that a check rather than a
+restatement. `test_derive.py` pins the case.
+
+**`bonding_curve_progress` is deliberately absent.** It is in §9's list, and it is
+computable — but only with curve constants that are not established for the current
+pump.fun program variant. Two plausible derivations of the same token's progress disagreed
+(33% by SOL raised, 65% by tokens remaining), so at least one constant is wrong. A progress
+figure that is quietly wrong would poison a feature; NULL does not. The raw reserves make it
+computable the moment the constants are pinned down.
+
 ### D12 — The backfill retry budget is a column, not a counter
 
 **Decision:** `tokens.backfill_attempts` is persisted and incremented in the database;

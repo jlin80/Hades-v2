@@ -357,6 +357,86 @@ measurable as soon as collection runs for a day: `tokens_backfill_exhausted` ove
 
 ---
 
+## Phase 3 addendum — what tracking measured
+
+Measured on 2026-08-17 by `scripts/run_tracking_smoke.py`, a 150-second run of discovery
+and tracking together against the live sources. 126 snapshots, 0 failures, 0 rate limits.
+
+### Tracking the whole universe is impossible by two orders of magnitude
+
+The primary sustains 1.64 req/s. Pump.fun creates 0.24–0.55 tokens/s. The spec's §8
+schedule costs **434 snapshots per token per 24 hours**, so tracking everything needs
+**104–239 req/s — 64x to 146x over capacity.**
+
+What a 1 req/s budget actually buys:
+
+| Horizon | Snapshots/token | Tokens/day |
+|---|---|---|
+| Full 24h schedule | 434 | ~199 |
+| **First hour (default)** | **110** | **~785** |
+| Early window only | 30 | ~2,880 |
+
+The default takes the middle row: it covers every outcome horizon §15 asks for
+(return_1m through return_1h) and yields ~24k observations a month.
+
+### The honest consequence: this is a sample, and a biased one
+
+In the 150-second run, at a capacity of 10: **`tracking_now` 10, `eligible_waiting` 85.**
+We declined 89% of eligible tokens.
+
+Admission is newest-first and one-way — once admitted, a token keeps its slot until it
+ages out, because churning slots would produce many truncated series and a truncated
+series cannot answer a question about the first minutes. The bias that introduces:
+**admitted tokens are those created when a slot happened to be free.** That is close to
+random in time, which is the best available, but it is **not a uniform sample of the
+universe** and research must not treat it as one. `eligible_waiting` is in `/status`
+because no later analysis recovers what we declined to observe.
+
+### The achieved interval is not the configured one
+
+Configured 10 s in the EARLY tier; observed deltas on a real series:
+
+```
+5.4 -> 17.8 -> 28.6 -> 39.0 -> 49.3 -> 61.5 -> 73.8 -> 85.9 -> 98.1 s
+        12.4    10.8    10.4    10.3    12.2    12.3    12.1    12.2
+```
+
+**~12.2 s against a 10 s target, ~20% slow.** The interval is a lower bound: the next
+snapshot is scheduled at `observed_at + interval`, and the pass that picks it up runs
+every 2 s, so lateness of roughly half a pass plus a request is structural.
+
+This is harmless *because* `observed_at` is stored on every row, so velocity features
+computed from actual deltas are correct. It would be harmful to anyone who assumed a
+uniform 10-second grid — so: **do not assume one.**
+
+### 🔴 `is_stale` measures trade inactivity, not provider lag
+
+15 of 126 snapshots (12%) came back flagged stale against a 60 s threshold. That number
+does not mean what the column name suggests.
+
+pump.fun's `updated_at` tracks when the record last *changed*, which is essentially the
+last trade — measured 1 second apart from `last_trade_timestamp` on a live token. So for
+a token nobody is trading, the reported data age grows while the data itself stays
+perfectly accurate. Visible directly in the run: one token reported an identical price at
+73.8 s, 85.9 s and 98.1 s. Nothing was stale; nothing had traded.
+
+So on this provider these fields are an **activity** signal, not a **freshness** one.
+Consequences, recorded rather than papered over:
+
+* `seconds_since_last_trade`, derivable from the stored `last_trade_at`, is the
+  unambiguous way to express what is actually being measured. No schema change needed.
+* Real freshness gating — §13's "reject a decision made on stale data" — requires a
+  decision with its own timestamp compared against the snapshot it used. That belongs to
+  Phase 6, not here.
+* Our own latency *is* measurable and is not the problem: `received_at - observed_at` was
+  effectively zero throughout.
+
+The column and threshold are kept, with their meaning documented at the model. Renaming
+them is deferred rather than done blind, because the right name depends on whether Phase 4
+wants inactivity as a feature — and it probably does.
+
+---
+
 ## Rules every provider adapter must follow (spec §6)
 
 Timeout · limited retry · exponential backoff · rate-limit handling · schema validation ·

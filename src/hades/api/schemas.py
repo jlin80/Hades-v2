@@ -66,6 +66,50 @@ class DiscoveryStatus(BaseModel):
     )
 
 
+class TrackingStatus(BaseModel):
+    """Tracking state, all of it measured."""
+
+    enabled: bool
+    running: bool
+    last_error: str | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+
+    max_concurrent: int
+    retire_after_seconds: float
+    snapshots_per_token: float
+    estimated_requests_per_second: float | None = Field(
+        default=None,
+        description=(
+            "Average rate the current capacity implies. Surfaced because the "
+            "primary's real limit is unpublished and 1.64 req/s is all that has "
+            "been measured as safe."
+        ),
+    )
+
+    tracking_now: int | None = None
+    eligible_waiting: int | None = Field(
+        default=None,
+        description=(
+            "Tokens that could be tracked but are not, because capacity is full. "
+            "This is the sample we are declining to take, and no later analysis "
+            "recovers it."
+        ),
+    )
+    snapshots_total: int | None = None
+    snapshots_last_hour: int | None = None
+    stale_snapshots: int | None = None
+    tokens_retired: int | None = None
+    tokens_migrated: int | None = None
+    tokens_dead: int | None = None
+    oldest_due_seconds: float | None = Field(
+        default=None,
+        description=(
+            "How far past its scheduled time the most overdue token is. The one "
+            "number that says whether the tracker is keeping up."
+        ),
+    )
+
+
 class StatusResponse(BaseModel):
     """Measured system state.
 
@@ -91,6 +135,7 @@ class StatusResponse(BaseModel):
         description="Tokens in state TRACKING. Null when the database is unreachable.",
     )
     discovery: DiscoveryStatus
+    tracking: TrackingStatus
 
     not_implemented: list[str] = Field(
         default_factory=list,
