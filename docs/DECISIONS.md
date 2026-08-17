@@ -115,3 +115,57 @@ Phase 17-style research runs in pure Python or it runs somewhere else.
 Same reasoning as D8, plus: structlog's value is processor pipelines, and we have one
 processor. `configure_logging` is idempotent because a stacked handler double-prints
 every line, which reads in the logs as double the activity.
+
+### D10 — Idempotency lives in a unique constraint, not in a "seen" set
+
+**Decision:** `tokens.token_address` is unique, and discovery writes through a single
+`INSERT ... ON CONFLICT (token_address) DO UPDATE ... WHERE` statement.
+
+V1 deduplicated in a `seen_registry` with a 24-hour TTL. That worked, and it also meant
+the process could not answer "have we seen this?" without its own memory being intact —
+and a restart is precisely when the answer matters and the memory is gone. The database
+survives restarts; a set does not.
+
+The conflict branch is where the care is, and each clause is there because losing it
+would be silent:
+
+- `COALESCE(existing, incoming)` on every enrichable column. The WebSocket path has no
+  `created_at`; a naive upsert would blank out the authoritative one on every
+  re-delivery, and `token_age` — the input to every early-window feature — would quietly
+  become uncomputable.
+- `discovered_at` and `source` are **not** enrichable. First sighting, first attribution.
+  A later sighting moving `discovered_at` forward would make our detection latency look
+  arbitrarily good.
+- `state` is not enrichable either, so a re-announced token cannot be dragged from
+  TRACKING back to DISCOVERED and have its snapshot schedule restarted.
+- The `WHERE` clause means the update only fires when the sighting actually adds
+  something, which is what makes "enriched" and "unchanged" distinguishable instead of
+  every re-observation bumping a timestamp.
+
+**⚠️ Verified against SQLite, not Postgres.** There is no Postgres on the development
+machine (no server, no Docker), so `tests/test_discovery_repository.py` runs the real
+statement against in-memory SQLite. The `ON CONFLICT` semantics match and the ORM types
+are dialect-portable, so the logic is genuinely exercised — but this is **not** proof of
+Postgres behaviour. **Running the suite against a real Postgres is a prerequisite for
+Phase 3.**
+
+### D11 — Nothing that can fail over the network sits in the write path
+
+**Decision:** persisting a discovered token makes no HTTP call. Missing data is filled by
+a separate periodic pass.
+
+This one was not designed, it was **found by running the system.** The original code
+fetched the authoritative `created_timestamp` inline for every pushed mint, and live it
+failed two ways at once: 49 of 51 fetches returned 404 (the socket announces a mint
+before pump.fun indexes it), and the failing call's latency was being charged to
+`discovered_at`, corrupting the exact measurement it was meant to support.
+
+The fix has two halves. `observed_at` is stamped by the provider at parse time and is
+what becomes `discovered_at`, so nothing we do afterwards can inflate it. And enrichment
+became `backfill_created_at()`, a pass over rows where `created_at IS NULL`, which runs
+when the tokens are older and the indexing race has resolved.
+
+Full numbers in `docs/DATA_SOURCES.md`. The measurement error turned out to be ~190 ms of
+a 2.4 s reading, so the mechanism mattered more than the magnitude — but the wasted
+request rate dropped from ~0.65/s of pure 404s to almost nothing, against a primary whose
+rate limit is unpublished and is our single largest technical risk.

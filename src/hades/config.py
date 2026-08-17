@@ -47,6 +47,25 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = Field(default=8000, ge=1, le=65535)
 
+    # --- Discovery (Phase 2) -------------------------------------------------
+    # Off by default: starting the API must never start writing to the database
+    # as a side effect. The operator turns collection on deliberately.
+    discovery_enabled: bool = False
+    # The WebSocket is the primary discovery path; polling only backfills what a
+    # disconnect lost. 60s is not a throughput lever — Hades V1 raised its poll
+    # interval 12x and its intake did not fall, because the rate at which tokens
+    # appear on Solana is not set by our clock.
+    discovery_poll_interval_seconds: float = Field(default=60.0, gt=0)
+    discovery_poll_limit: int = Field(default=50, ge=1, le=200)
+    # Tokens per pass whose missing created_at we chase. Deferred rather than
+    # fetched on arrival: measured live, 49 of 51 immediate fetches 404'd
+    # because the socket announces a mint before pump.fun indexes it.
+    discovery_backfill_limit: int = Field(default=50, ge=0, le=200)
+
+    provider_timeout_seconds: float = Field(default=10.0, gt=0)
+    provider_max_attempts: int = Field(default=3, ge=1, le=10)
+    provider_max_connections: int = Field(default=10, ge=1, le=100)
+
     @field_validator("database_url")
     @classmethod
     def _require_async_driver(cls, value: PostgresDsn) -> PostgresDsn:

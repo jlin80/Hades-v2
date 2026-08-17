@@ -9,6 +9,7 @@ is a finding while the first is noise.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -29,6 +30,32 @@ class HealthResponse(BaseModel):
     database: DatabaseStatus
     trading_mode: Literal["paper"] = "paper"
     is_live: Literal[False] = False
+
+
+class DiscoveryStatus(BaseModel):
+    """Discovery state, all of it measured.
+
+    ``running`` is whether the background task is actually alive, not whether
+    it was configured to start. Hades V1's dashboard reported healthy components
+    that were doing nothing; the distinction is the whole point.
+    """
+
+    enabled: bool
+    running: bool
+    last_error: str | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+
+    tokens_total: int | None = None
+    tokens_by_state: dict[str, int] | None = None
+    tokens_with_created_at: int | None = None
+    last_discovered_at: datetime | None = None
+    median_discovery_latency_ms: float | None = Field(
+        default=None,
+        description=(
+            "Median of (discovered_at - created_at). How far behind creation our "
+            "first sighting is — the reason those are two columns and not one."
+        ),
+    )
 
 
 class StatusResponse(BaseModel):
@@ -55,6 +82,7 @@ class StatusResponse(BaseModel):
         default=None,
         description="Tokens in state TRACKING. Null when the database is unreachable.",
     )
+    discovery: DiscoveryStatus
 
     not_implemented: list[str] = Field(
         default_factory=list,

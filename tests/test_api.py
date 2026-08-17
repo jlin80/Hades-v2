@@ -5,7 +5,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from hades import __version__
+from hades.api.app import create_app
 from hades.api.routes import NOT_IMPLEMENTED_METRICS
+from hades.config import Settings
 
 
 def test_health_reports_degraded_when_database_is_down(client: TestClient) -> None:
@@ -47,8 +49,35 @@ def test_status_returns_null_counters_not_zero_when_database_is_down(
 
 def test_status_declares_which_metrics_do_not_exist_yet(client: TestClient) -> None:
     body = client.get("/status").json()
-    assert body["phase"] == 0
+    assert body["phase"] == 2
     assert set(body["not_implemented"]) == set(NOT_IMPLEMENTED_METRICS)
+
+
+def test_discovery_reports_configured_and_running_separately(client: TestClient) -> None:
+    """ "Configured" and "actually running" are different facts.
+
+    The default fixture has discovery off, so both are false. The pair exists
+    because V1's dashboard could not tell a working collector from a dead one.
+    """
+    discovery = client.get("/status").json()["discovery"]
+    assert discovery["enabled"] is False
+    assert discovery["running"] is False
+    assert discovery["last_error"] is None
+
+
+def test_discovery_does_not_start_when_the_database_is_unreachable(
+    settings: Settings,
+) -> None:
+    """Enabled plus no database must not start a writer.
+
+    It would spend the primary's rate limit producing nothing, and report
+    itself as running while doing it.
+    """
+    enabled = settings.model_copy(update={"discovery_enabled": True})
+    with TestClient(create_app(enabled)) as client:
+        discovery = client.get("/status").json()["discovery"]
+        assert discovery["enabled"] is True
+        assert discovery["running"] is False
 
 
 def test_status_reports_uptime(client: TestClient) -> None:

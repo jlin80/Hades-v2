@@ -11,13 +11,14 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, select
 
 from hades import __version__
-from hades.api.schemas import DatabaseStatus, HealthResponse, StatusResponse
+from hades.api.schemas import DatabaseStatus, DiscoveryStatus, HealthResponse, StatusResponse
 from hades.config import Settings
 from hades.db.engine import Database, DatabaseHealth
-from hades.db.models import Token, TokenState
+from hades.db.models import TokenState
+from hades.discovery.repository import TokenRepository
+from hades.discovery.runtime import DiscoveryRuntime
 
 router = APIRouter(tags=["observability"])
 
@@ -27,7 +28,6 @@ NOT_IMPLEMENTED_METRICS = (
     "snapshots_total",
     "signals_total",
     "paper_trades",
-    "provider_status",
 )
 
 
@@ -39,6 +39,11 @@ def get_database(request: Request) -> Database:
 def get_settings(request: Request) -> Settings:
     settings: Settings = request.app.state.settings
     return settings
+
+
+def get_discovery(request: Request) -> DiscoveryRuntime:
+    runtime: DiscoveryRuntime = request.app.state.discovery
+    return runtime
 
 
 def _to_schema(health: DatabaseHealth) -> DatabaseStatus:
@@ -68,16 +73,33 @@ async def status(
     request: Request,
     database: Annotated[Database, Depends(get_database)],
     settings: Annotated[Settings, Depends(get_settings)],
+    discovery: Annotated[DiscoveryRuntime, Depends(get_discovery)],
 ) -> StatusResponse:
     db_health = await database.check_health()
+
+    discovery_status = DiscoveryStatus(
+        enabled=settings.discovery_enabled,
+        running=discovery.is_running,
+        last_error=discovery.last_error,
+        counters=discovery.counters,
+    )
 
     tokens_discovered: int | None = None
     tokens_tracking: int | None = None
     if db_health.connected:
         async with database.session() as session:
-            tokens_discovered = await session.scalar(select(func.count()).select_from(Token))
-            tokens_tracking = await session.scalar(
-                select(func.count()).select_from(Token).where(Token.state == TokenState.TRACKING)
+            repository = TokenRepository(session)
+            stats = await repository.stats()
+            tokens_discovered = stats.total
+            tokens_tracking = stats.by_state.get(TokenState.TRACKING.value, 0)
+            discovery_status = discovery_status.model_copy(
+                update={
+                    "tokens_total": stats.total,
+                    "tokens_by_state": stats.by_state,
+                    "tokens_with_created_at": stats.with_created_at,
+                    "last_discovered_at": stats.last_discovered_at,
+                    "median_discovery_latency_ms": stats.median_discovery_latency_ms,
+                }
             )
 
     started_at: float = request.app.state.started_at
@@ -85,10 +107,11 @@ async def status(
         status="healthy" if db_health.connected else "degraded",
         version=__version__,
         environment=settings.environment,
-        phase=0,
+        phase=2,
         uptime_seconds=round(time.monotonic() - started_at, 3),
         database=_to_schema(db_health),
         tokens_discovered=tokens_discovered,
         tokens_tracking=tokens_tracking,
+        discovery=discovery_status,
         not_implemented=list(NOT_IMPLEMENTED_METRICS),
     )

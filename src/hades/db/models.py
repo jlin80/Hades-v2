@@ -15,8 +15,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Index, String, func
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import DateTime, Enum, Index, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hades.db.base import Base
@@ -53,9 +52,10 @@ class Token(Base):
         Index("ix_tokens_created_at", "created_at"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        postgresql.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    # Generic Uuid, not postgresql.UUID: renders as native UUID on Postgres and
+    # as CHAR(32) on SQLite, which lets the test suite exercise the real upsert
+    # SQL without a database server. The migrations stay Postgres-specific.
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     token_address: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
 
     # Provider-supplied metadata. Nullable on purpose: a missing symbol is a
@@ -75,6 +75,11 @@ class Token(Base):
         nullable=False,
         default=TokenState.DISCOVERED,
     )
+
+    # On-chain proof of the claim: the creation tx signature, where the
+    # discovering source supplied one. It is what lets any row in the research
+    # dataset be verified against the chain independently of us.
+    raw_provider_reference: Mapped[str | None] = mapped_column(String(128))
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

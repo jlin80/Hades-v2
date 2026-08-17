@@ -286,6 +286,70 @@ already collected.
 
 ---
 
+## Phase 2 addendum — what running it against live sources taught us
+
+Measured on 2026-08-17 by `scripts/run_discovery_smoke.py`, two runs of 75 s and
+100 s against the real WebSocket and the real primary.
+
+### The primary 404s on a mint the socket just announced
+
+**49 of 51 immediate `/coins/{mint}` fetches returned 404.** PumpPortal delivers a
+creation before pump.fun's own API has indexed it. The mint is real — the same address
+resolves fine a little later.
+
+This killed the original design, which fetched the authoritative `created_timestamp`
+inline on every pushed mint. Deferring it to a periodic pass over rows where
+`created_at IS NULL` took the same work from ~0.65 wasted req/s down to **3 attempts in
+100 s**, because by then most rows have already had `created_at` filled by the poller's
+own listing.
+
+### An HTTP call inside the write path corrupted its own measurement
+
+The inline fetch sat between a frame arriving and the row being written, so its latency
+was charged to `discovered_at`. Fixed by stamping `observed_at` in the provider, at parse
+time, and using that for `discovered_at`.
+
+**Honest accounting of the size of that error:** the median moved from **2594.9 ms** to
+**2404.3 ms**. So the inline fetch inflated the reading by roughly 190 ms — the mechanism
+was real, the magnitude was small, and most of the 2.4 s is genuine.
+
+### Measured discovery latency: ~2.4 s
+
+Median of `discovered_at - created_at` over rows where both are known: **2404.3 ms**.
+
+Read it precisely: it is the gap between *the creation timestamp pump.fun records* and
+*our receipt of the PumpPortal frame*. Whether pump.fun's `created_timestamp` is the
+on-chain block time or its own indexing time is **not established**, so this is not yet
+"how far behind the chain we are". Establishing that needs a comparison against the
+creation transaction's block time, which the `signature` we store makes possible later.
+
+For a push feed 2.4 s is slower than one might hope. It is still far better than any
+poll interval could give, and it is now measured rather than assumed.
+
+### 🔴 Some mints never appear in pump.fun's API
+
+One token in the 100 s run returned 404 on three consecutive backfill passes, minutes
+apart. The likely explanation, unconfirmed: mints created through external launchpads —
+one creation event carried `uri: https://m.rapidlaunch.io/...` — route through the pump
+program and reach the PumpPortal stream, but are absent from pump.fun's own frontend
+index.
+
+Consequence for Phase 3: those tokens have **no `created_at`, so no `token_age`**, and
+every early-window feature is computed from token age. They cannot be scheduled for
+adaptive tracking. Options, none chosen yet:
+
+1. Leave them with `created_at` NULL and exclude them from tracking. Honest, and loses
+   whatever fraction of the universe they represent — **which has not been measured**.
+2. Derive creation time from the stored creation `signature` via an RPC lookup of the
+   transaction's block time. Authoritative, and needs a paid RPC.
+3. Give the backfill a bounded retry budget, then mark the token INACTIVE, so the pass
+   does not re-request an unindexed mint forever.
+
+(3) is needed regardless of the others, or the backfill queue accumulates permanent
+failures and starves genuinely pending tokens. Not yet implemented.
+
+---
+
 ## Rules every provider adapter must follow (spec §6)
 
 Timeout · limited retry · exponential backoff · rate-limit handling · schema validation ·

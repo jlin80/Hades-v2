@@ -12,15 +12,18 @@ mistakes and reusable decisions — not a codebase to port. See `docs/DECISIONS.
 
 ## Status
 
-**Phases 0–1 complete.** Phases advance only when the current one passes its gate;
-nothing beyond Phase 1 is built.
+**Phases 0–2 complete.** Phases advance only when the current one passes its gate;
+nothing beyond Phase 2 is built.
+
+Discovery is **off by default** (`HADES_DISCOVERY_ENABLED=false`): starting the API must
+never begin writing to the database as a side effect.
 
 | Phase | Scope | State |
 |---|---|---|
 | 0 | Repo, config, PostgreSQL, Alembic, Docker, logging, FastAPI, health/status, tests | ✅ |
 | 1 | Verify real data sources → [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | ✅ |
-| 2 | Token discovery | ⬜ next |
-| 3 | Snapshot tracking | ⬜ |
+| 2 | Token discovery — discover, validate, persist, deduplicate, recover | ✅ |
+| 3 | Snapshot tracking | ⬜ next |
 | 4 | Feature engine | ⬜ |
 | 5 | Signal research (one hypothesis) | ⬜ |
 | 6 | Paper trading | ⬜ |
@@ -65,6 +68,22 @@ All of that was measured, not assumed — rerun the evidence with:
 Four metrics have no usable free source and stay NULL: `unique_buyers`,
 `unique_sellers`, `buy_volume`, `sell_volume`. That constrains the Phase 5 hypothesis —
 see the open decision at the end of [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md).
+
+## Discovery
+
+Two sources, one idempotent funnel. The WebSocket pushes a mint on creation; polling the
+primary backfills what a disconnect lost and fills in the `created_at` the socket does not
+carry. Both write through the same `ON CONFLICT` upsert, so overlap is free and neither
+source has to be reliable on its own.
+
+Measured end to end against live sources: **80 tokens persisted in 100 s**, median
+discovery latency **2404 ms**. Reproduce with:
+
+```bash
+.venv/Scripts/python scripts/run_discovery_smoke.py 100
+```
+
+That writes to a throwaway SQLite file, never to Postgres.
 
 ## Safety
 

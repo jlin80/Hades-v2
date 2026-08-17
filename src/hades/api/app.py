@@ -18,6 +18,7 @@ from hades import __version__
 from hades.api.routes import router
 from hades.config import Settings, load_settings
 from hades.db.engine import Database
+from hades.discovery.runtime import DiscoveryRuntime, build_service
 from hades.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = resolved
-        app.state.database = Database(resolved)
+        database = Database(resolved)
+        app.state.database = database
         app.state.started_at = time.monotonic()
 
-        health = await app.state.database.check_health()
+        health = await database.check_health()
         logger.info(
             "startup",
             extra={
@@ -47,15 +49,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "environment": resolved.environment,
                     "database_connected": health.connected,
                     "database_error": health.error,
+                    "discovery_enabled": resolved.discovery_enabled,
                 }
             },
         )
+
+        # Discovery only starts when the operator asked for it *and* the
+        # database answered. Starting a writer against an unreachable database
+        # would burn the primary's rate limit producing nothing.
+        service = (
+            build_service(database, resolved)
+            if resolved.discovery_enabled and health.connected
+            else None
+        )
+        if resolved.discovery_enabled and not health.connected:
+            logger.error("discovery_not_started_database_unreachable")
+        discovery = DiscoveryRuntime(service)
+        app.state.discovery = discovery
+        await discovery.start()
+
         # A dead database is logged, not fatal: the process must stay up so
         # /health can *report* the outage. A crash loop reports nothing.
         try:
             yield
         finally:
-            await app.state.database.close()
+            await discovery.stop()
+            await database.close()
             logger.info("shutdown")
 
     app = FastAPI(
