@@ -226,6 +226,33 @@ pump.fun program variant. Two plausible derivations of the same token's progress
 figure that is quietly wrong would poison a feature; NULL does not. The raw reserves make it
 computable the moment the constants are pinned down.
 
+### D15 — Features are pure functions, and look-ahead is impossible by signature
+
+**Decision:** every feature is a pure function of a snapshot series.
+`compute_features(series, as_of=...)` truncates to `as_of` before anything runs, so no
+feature can see a later observation.
+
+Temporal leakage is the one defect that **fails looking like success** — excellent offline
+metrics from a model that cannot work. Hades V1 built its whole knowledge loop so the
+leaking version was impossible to write, and this is the equivalent here: it is a property
+of the call signature, not a rule to remember. A test inserts a violent price move after
+the decision point and asserts the vector is unchanged.
+
+Purity also buys reproducibility, which §11 requires: any number in the dataset can be
+recomputed from stored snapshots and checked by hand, with no database and no clock.
+
+`FEATURE_VERSION` is stamped on every vector. A definition change must bump it, because a
+stored vector's meaning is fixed by the version that produced it — one whose formulas
+silently changed underneath it is not intact, it only looks intact.
+
+**Missing is None, never 0.0.** A zero velocity claims the price did not move; not knowing
+whether it moved is a different fact. Collapsing them lets unmeasured periods masquerade as
+calm ones.
+
+And every rate divides by **observed** elapsed time, never the configured interval. Phase 3
+measured those at ~12.2s versus 10s — a consistent 20% error in a direction nobody would
+notice.
+
 ### D12 — The backfill retry budget is a column, not a counter
 
 **Decision:** `tokens.backfill_attempts` is persisted and incremented in the database;

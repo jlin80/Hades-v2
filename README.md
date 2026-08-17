@@ -12,8 +12,8 @@ mistakes and reusable decisions — not a codebase to port. See `docs/DECISIONS.
 
 ## Status
 
-**Phases 0–3 complete.** Phases advance only when the current one passes its gate;
-nothing beyond Phase 3 is built.
+**Phases 0–4 complete.** Phases advance only when the current one passes its gate;
+nothing beyond Phase 4 is built.
 
 Discovery and tracking are both **off by default** (`HADES_DISCOVERY_ENABLED`,
 `HADES_TRACKING_ENABLED`): starting the API must never begin writing to the database as a
@@ -25,8 +25,8 @@ side effect.
 | 1 | Verify real data sources → [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | ✅ |
 | 2 | Token discovery — discover, validate, persist, deduplicate, recover | ✅ |
 | 3 | Adaptive snapshot tracking, persistence, validation, stale detection | ✅ |
-| 4 | Feature engine | ⬜ next |
-| 5 | Signal research (one hypothesis) | ⬜ |
+| 4 | Feature engine — [`docs/FEATURES.md`](docs/FEATURES.md) | ✅ |
+| 5 | Signal research (one hypothesis) | ⬜ next |
 | 6 | Paper trading | ⬜ |
 | 7 | Outcome + analytics | ⬜ |
 
@@ -106,6 +106,23 @@ take. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D13.
 .venv/Scripts/python scripts/run_tracking_smoke.py 150
 ```
 
+## Features
+
+41 features, all pure functions of a snapshot series — no I/O, no clock, so every number
+in the dataset can be recomputed and checked. Look-ahead is impossible by signature:
+`compute_features(series, as_of=...)` truncates before anything runs.
+
+Missing inputs give `None`, never `0.0`, and every rate divides by **observed** elapsed
+time rather than the configured interval (measured: ~12.2s versus 10s).
+
+The features §10 asks for that need per-trade data are absent, not faked — see
+[`docs/FEATURES.md`](docs/FEATURES.md) for the full set, the substitutes, and what that
+means for Phase 5's hypothesis.
+
+```bash
+.venv/Scripts/python scripts/run_features_demo.py 120
+```
+
 ## Safety
 
 No private keys, no signer, no transaction submission — enforced by an AST scan in
@@ -119,9 +136,13 @@ src/hades/
   config.py       Settings (env-driven, frozen, rejects sync DB drivers)
   logging.py      stdlib JSON-lines logging
   db/             engine + session lifecycle, ORM models
+  providers/      pump.fun (primary), PumpPortal (discovery), shared HTTP policy
+  discovery/      Phase 2 — idempotent token discovery
+  tracking/       Phase 3 — adaptive snapshots, curve derivations
+  features/       Phase 4 — pure feature functions
   api/            FastAPI app, /health, /status
 migrations/       Alembic
-scripts/          Phase 1 data-source probes (reproducible evidence)
-docs/             DATA_SOURCES.md, DECISIONS.md, SAFETY.md, DEPLOYMENT.md
+scripts/          probes and smoke runs against live sources (reproducible evidence)
+docs/             DATA_SOURCES.md, FEATURES.md, DECISIONS.md, SAFETY.md, DEPLOYMENT.md
 tests/
 ```
