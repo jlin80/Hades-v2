@@ -89,7 +89,9 @@ async def status(
     if db_health.connected:
         async with database.session() as session:
             repository = TokenRepository(session)
-            stats = await repository.stats()
+            stats = await repository.stats(
+                backfill_max_attempts=settings.discovery_backfill_max_attempts
+            )
             tokens_discovered = stats.total
             tokens_tracking = stats.by_state.get(TokenState.TRACKING.value, 0)
             discovery_status = discovery_status.model_copy(
@@ -97,6 +99,7 @@ async def status(
                     "tokens_total": stats.total,
                     "tokens_by_state": stats.by_state,
                     "tokens_with_created_at": stats.with_created_at,
+                    "tokens_backfill_exhausted": stats.backfill_exhausted,
                     "last_discovered_at": stats.last_discovered_at,
                     "median_discovery_latency_ms": stats.median_discovery_latency_ms,
                 }

@@ -5,12 +5,10 @@ duplicates. That is the single most important property in Phase 2, so it is
 tested by executing the actual upsert statement rather than by asserting that
 the code looks right.
 
-⚠️ These run on **SQLite**, not Postgres — there is no Postgres available on the
-development machine (no server, no Docker). ``ON CONFLICT ... DO UPDATE ... WHERE``
-has the same semantics in both, and the ORM types are dialect-portable, so the
-logic is genuinely exercised. It is *not* proof of Postgres behaviour. Verifying
-against a real Postgres is a prerequisite for Phase 3 and is recorded as such in
-docs/DECISIONS.md.
+Every test here runs **twice**: once against SQLite and once against a real
+PostgreSQL 16 started by ``pgserver``. SQLite alone would not be evidence — the
+system ships on Postgres, and "the same SQL" is a claim about two engines, not
+one. Running both also keeps the fast path fast while the slow path proves it.
 """
 
 from __future__ import annotations
@@ -32,11 +30,24 @@ CREATOR = "8i6qTrvQZ2c66GdPb8CgQh599CAMUGJPWqVWMwbtjGYf"
 CREATED = datetime(2026, 8, 17, 13, 38, 54, tzinfo=UTC)
 
 
-@pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+@pytest.fixture(params=["sqlite", "postgresql"])
+async def session(
+    request: pytest.FixtureRequest, postgres_dsn: str | None
+) -> AsyncIterator[AsyncSession]:
+    if request.param == "postgresql":
+        if postgres_dsn is None:
+            pytest.skip("pgserver is not installed; cannot verify against real PostgreSQL")
+        engine = create_async_engine(postgres_dsn)
+        # The server is shared across tests, so each one starts from a clean
+        # schema. Dropping also exercises the native enum type round-trip.
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
+            await connection.run_sync(Base.metadata.create_all)
+    else:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as active:
         yield active

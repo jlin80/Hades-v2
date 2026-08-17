@@ -72,6 +72,7 @@ class DiscoveryService:
         poll_interval_seconds: float = 60.0,
         poll_limit: int = 50,
         backfill_limit: int = 50,
+        backfill_max_attempts: int = 5,
     ) -> None:
         self._database = database
         self._pumpfun = pumpfun or PumpFunProvider()
@@ -79,6 +80,7 @@ class DiscoveryService:
         self._poll_interval_seconds = poll_interval_seconds
         self._poll_limit = poll_limit
         self._backfill_limit = backfill_limit
+        self._backfill_max_attempts = backfill_max_attempts
         self.counters = DiscoveryCounters()
         # Known mints, loaded from the database at start. Purely a rate-limit
         # saver: the unique constraint is what actually prevents duplicates.
@@ -128,11 +130,16 @@ class DiscoveryService:
            frame arriving and the row being written, so its latency — mostly the
            latency of a 404 — was counted as detection latency.
 
+        Each token gets a bounded number of attempts. Without that budget a mint
+        that pump.fun never indexes — measured: some return 404 on every attempt,
+        minutes apart — sits at the head of the queue forever and starves the
+        tokens whose race simply has not resolved yet.
+
         Returns how many tokens were filled in.
         """
         async with self._database.session() as session:
             pending = await TokenRepository(session).addresses_missing_created_at(
-                limit=self._backfill_limit
+                limit=self._backfill_limit, max_attempts=self._backfill_max_attempts
             )
         if not pending:
             return 0
@@ -143,6 +150,7 @@ class DiscoveryService:
             try:
                 authoritative = await self._pumpfun.fetch_token(address)
             except ProviderRateLimitedError as exc:
+                # Not the token's fault, so it does not spend a retry.
                 self.counters.provider_errors += 1
                 logger.warning(
                     "backfill_rate_limited",
@@ -150,9 +158,10 @@ class DiscoveryService:
                 )
                 break
             except ProviderError as exc:
-                # Still not indexed, or gone. Leaving created_at NULL is correct
-                # (spec §9) and the next pass will try again.
+                # Still not indexed, or never will be. Leaving created_at NULL
+                # is correct (spec §9); the budget decides how long we keep asking.
                 self.counters.backfill_failures += 1
+                await self._spend_attempt(address)
                 logger.info(
                     "backfill_pending",
                     extra={"context": {"token_address": address, "reason": str(exc)}},
@@ -161,6 +170,7 @@ class DiscoveryService:
 
             if authoritative.created_at is None:
                 self.counters.backfill_failures += 1
+                await self._spend_attempt(address)
                 continue
 
             async with self._database.session() as session:
@@ -174,6 +184,10 @@ class DiscoveryService:
             extra={"context": {"pending": len(pending), "filled": filled}},
         )
         return filled
+
+    async def _spend_attempt(self, token_address: str) -> None:
+        async with self._database.session() as session:
+            await TokenRepository(session).record_backfill_attempt(token_address)
 
     async def run_websocket(self) -> None:
         """Consume the push stream until cancelled."""

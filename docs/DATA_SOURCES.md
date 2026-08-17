@@ -342,11 +342,18 @@ adaptive tracking. Options, none chosen yet:
    whatever fraction of the universe they represent — **which has not been measured**.
 2. Derive creation time from the stored creation `signature` via an RPC lookup of the
    transaction's block time. Authoritative, and needs a paid RPC.
-3. Give the backfill a bounded retry budget, then mark the token INACTIVE, so the pass
-   does not re-request an unindexed mint forever.
+3. Give the backfill a bounded retry budget, so the pass does not re-request an unindexed
+   mint forever.
 
-(3) is needed regardless of the others, or the backfill queue accumulates permanent
-failures and starves genuinely pending tokens. Not yet implemented.
+**(3) is implemented** (`docs/DECISIONS.md` D12): `tokens.backfill_attempts` is persisted,
+the queue excludes tokens past the budget, and `/status` reports
+`tokens_backfill_exhausted`. It was needed regardless of the others — without it the queue
+accumulates permanent failures and starves the tokens whose race simply has not resolved.
+
+**(1) and (2) remain open**, and the number that would decide between them —
+what fraction of the universe these tokens are — is still **not measured**. It becomes
+measurable as soon as collection runs for a day: `tokens_backfill_exhausted` over
+`tokens_total` is exactly that fraction.
 
 ---
 

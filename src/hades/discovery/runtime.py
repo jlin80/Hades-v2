@@ -42,6 +42,7 @@ def build_service(database: Database, settings: Settings) -> DiscoveryService:
         poll_interval_seconds=settings.discovery_poll_interval_seconds,
         poll_limit=settings.discovery_poll_limit,
         backfill_limit=settings.discovery_backfill_limit,
+        backfill_max_attempts=settings.discovery_backfill_max_attempts,
     )
 
 

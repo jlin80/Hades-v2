@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # fetched on arrival: measured live, 49 of 51 immediate fetches 404'd
     # because the socket announces a mint before pump.fun indexes it.
     discovery_backfill_limit: int = Field(default=50, ge=0, le=200)
+    # Attempts before we stop asking about a given mint. Some tokens reach the
+    # WebSocket but never enter pump.fun's index at all (external launchpads),
+    # and without a budget they occupy the queue forever.
+    discovery_backfill_max_attempts: int = Field(default=5, ge=1, le=50)
 
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)

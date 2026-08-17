@@ -15,7 +15,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Index, String, Uuid, func
+from sqlalchemy import DateTime, Enum, Index, Integer, String, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hades.db.base import Base
@@ -80,6 +80,15 @@ class Token(Base):
     # discovering source supplied one. It is what lets any row in the research
     # dataset be verified against the chain independently of us.
     raw_provider_reference: Mapped[str | None] = mapped_column(String(128))
+
+    # How many times we have asked the primary for this token's missing
+    # created_at. Persisted rather than counted in memory: some mints never
+    # appear in pump.fun's index at all (external launchpads), and without a
+    # budget that survives restarts the backfill re-requests them forever and
+    # starves the tokens whose indexing race simply has not resolved yet.
+    backfill_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

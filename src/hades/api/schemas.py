@@ -48,6 +48,14 @@ class DiscoveryStatus(BaseModel):
     tokens_total: int | None = None
     tokens_by_state: dict[str, int] | None = None
     tokens_with_created_at: int | None = None
+    tokens_backfill_exhausted: int | None = Field(
+        default=None,
+        description=(
+            "Tokens that will never get a created_at from the primary, having spent "
+            "their retry budget. Without token_age they cannot be tracked, so this "
+            "growing is a real loss of universe coverage, not a cosmetic counter."
+        ),
+    )
     last_discovered_at: datetime | None = None
     median_discovery_latency_ms: float | None = Field(
         default=None,

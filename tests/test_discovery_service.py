@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from hades.db.base import Base
 from hades.discovery.repository import TokenRepository, UpsertOutcome
 from hades.discovery.service import DiscoveryService
-from hades.providers.errors import ProviderUnavailableError
+from hades.providers.errors import ProviderRateLimitedError, ProviderUnavailableError
 from hades.providers.models import DiscoveredToken
 
 MINT = "nHxKqPLgixPc5BFF1PJsZt6YQJYKgYKGfPgiXCBpump"
@@ -50,16 +50,20 @@ class FakePumpFun:
         *,
         created_at: datetime | None = CREATED,
         fail: bool = False,
+        rate_limited: bool = False,
         listing: list[DiscoveredToken] | None = None,
     ) -> None:
         self.created_at = created_at
         self.fail = fail
+        self.rate_limited = rate_limited
         self.listing = listing or []
         self.fetch_calls: list[str] = []
         self.list_calls = 0
 
     async def fetch_token(self, token_address: str) -> DiscoveredToken:
         self.fetch_calls.append(token_address)
+        if self.rate_limited:
+            raise ProviderRateLimitedError("pumpfun", "429", 0.0)
         if self.fail:
             raise ProviderUnavailableError("pumpfun", "simulated outage")
         return DiscoveredToken(
@@ -212,6 +216,67 @@ class TestBackfill:
 
         assert await service.backfill_created_at() == 0
         assert service.counters.backfill_failures == 1
+
+    async def test_a_permanently_unindexed_token_stops_being_requested(
+        self, database: FakeDatabase
+    ) -> None:
+        """The starvation guard.
+
+        Some mints reach the WebSocket but never enter pump.fun's index at all
+        — measured, 404 on every attempt minutes apart. Without a budget they
+        sit at the head of the queue forever, and the tokens whose indexing race
+        merely has not resolved yet never get looked at.
+        """
+        pumpfun = FakePumpFun(fail=True)
+        service = make_service(database, pumpfun, backfill_max_attempts=3)
+        await service.handle(ws_token())
+
+        for _ in range(5):
+            await service.backfill_created_at()
+
+        # Three attempts spent, then the token drops out of the queue.
+        assert len(pumpfun.fetch_calls) == 3
+
+    async def test_an_exhausted_token_is_reported_not_hidden(self, database: FakeDatabase) -> None:
+        """It is a loss of universe coverage, so it has to be visible.
+
+        A token with no created_at has no token_age, and every early-window
+        feature is computed from age — so it can never be tracked.
+        """
+        service = make_service(database, FakePumpFun(fail=True), backfill_max_attempts=2)
+        await service.handle(ws_token())
+        await service.backfill_created_at()
+        await service.backfill_created_at()
+
+        async with database.session() as session:
+            stats = await TokenRepository(session).stats(backfill_max_attempts=2)
+        assert stats.backfill_exhausted == 1
+        assert stats.with_created_at == 0
+
+    async def test_a_rate_limit_does_not_spend_the_tokens_budget(
+        self, database: FakeDatabase
+    ) -> None:
+        """Being throttled is our problem, not the token's.
+
+        Charging a retry for it would burn through budgets during an outage and
+        permanently drop tokens that were perfectly fine.
+        """
+        pumpfun = FakePumpFun(rate_limited=True)
+        service = make_service(database, pumpfun, backfill_max_attempts=2)
+        await service.handle(ws_token())
+
+        await service.backfill_created_at()
+        await service.backfill_created_at()
+        await service.backfill_created_at()
+
+        async with database.session() as session:
+            token = await TokenRepository(session).get(MINT)
+        assert token is not None
+        assert token.backfill_attempts == 0
+
+        # And once the provider recovers, the token is still eligible.
+        pumpfun.rate_limited = False
+        assert await service.backfill_created_at() == 1
 
     async def test_backfill_takes_the_longest_waiting_first(self, database: FakeDatabase) -> None:
         """Oldest sighting first: its indexing race has definitely resolved."""

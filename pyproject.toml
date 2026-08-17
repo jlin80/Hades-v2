@@ -27,6 +27,13 @@ dev = [
     # Used by scripts/probe_pumpportal_ws.py. Pure Python with an optional C
     # extension it falls back from, so it is safe on the Bobcat (see D8).
     "websockets>=14",
+    # SQLite driver, so the storage tests can also run without a server.
+    "aiosqlite>=0.20",
+    # Bundles a real PostgreSQL binary and runs it from a temp directory. This
+    # is what lets the storage layer and the migrations be verified against the
+    # dialect they actually ship on, with no Docker and nothing installed
+    # system-wide. Dev-only: it never enters the runtime image (see D8).
+    "pgserver>=0.1.4",
 ]
 
 [tool.setuptools.dynamic]

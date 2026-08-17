@@ -142,12 +142,20 @@ would be silent:
   something, which is what makes "enriched" and "unchanged" distinguishable instead of
   every re-observation bumping a timestamp.
 
-**⚠️ Verified against SQLite, not Postgres.** There is no Postgres on the development
-machine (no server, no Docker), so `tests/test_discovery_repository.py` runs the real
-statement against in-memory SQLite. The `ON CONFLICT` semantics match and the ORM types
-are dialect-portable, so the logic is genuinely exercised — but this is **not** proof of
-Postgres behaviour. **Running the suite against a real Postgres is a prerequisite for
-Phase 3.**
+**Verified against both SQLite and real PostgreSQL 16.** Every test in
+`tests/test_discovery_repository.py` runs twice, and `tests/test_migrations.py` applies
+the real migrations — upgrade to head, downgrade to base, upgrade again, plus stepwise —
+against a live server.
+
+That was initially recorded here as an open caveat: there is no Postgres installed on the
+development machine and no Docker. It was closed rather than carried, because "the same
+SQL" is a claim about two engines and asserting it from one is not evidence. `pgserver`
+bundles a PostgreSQL binary and runs it from a temp directory — no Docker, nothing
+installed system-wide, dev dependency only. If it is ever unavailable on some platform,
+those tests **skip with a stated reason** rather than silently passing.
+
+The migration suite immediately earned itself: adding `backfill_attempts` in D12 broke
+the expected-schema assertion, which is exactly the drift it exists to catch.
 
 ### D11 — Nothing that can fail over the network sits in the write path
 
@@ -169,3 +177,28 @@ Full numbers in `docs/DATA_SOURCES.md`. The measurement error turned out to be ~
 a 2.4 s reading, so the mechanism mattered more than the magnitude — but the wasted
 request rate dropped from ~0.65/s of pure 404s to almost nothing, against a primary whose
 rate limit is unpublished and is our single largest technical risk.
+
+### D12 — The backfill retry budget is a column, not a counter
+
+**Decision:** `tokens.backfill_attempts` is persisted and incremented in the database;
+tokens past `discovery_backfill_max_attempts` drop out of the queue and are reported in
+`/status` as `tokens_backfill_exhausted`.
+
+Some mints reach the WebSocket but never appear in pump.fun's index at all — measured,
+404 on every attempt minutes apart, most likely external-launchpad tokens. Without a
+budget, those sit at the head of a queue ordered by oldest-sighting-first and **starve
+the tokens whose indexing race merely has not resolved yet**. The failure is not that we
+waste requests; it is that the tokens we *could* have fixed never get looked at.
+
+Persisted rather than in-memory for the same reason as D10: a restart must not hand a
+hopeless token a fresh budget, or the starvation returns on the next deploy.
+
+A rate limit does **not** spend a token's budget. Being throttled is our problem, not the
+token's, and charging it would burn every budget during an outage and permanently drop
+tokens that were fine.
+
+Exhausted tokens keep `state = DISCOVERED`. Marking them INACTIVE was considered and
+rejected: it would conflate "we could not get metadata" with "this token is dead", and
+those are different facts about different things. What they lose is `created_at`, hence
+`token_age`, hence every early-window feature — so they cannot be tracked, and the count
+is surfaced because it is a real loss of universe coverage.

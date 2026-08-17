@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy import or_ as sa_or
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +44,7 @@ class DiscoveryStats:
     total: int
     by_state: dict[str, int]
     with_created_at: int
+    backfill_exhausted: int
     last_discovered_at: datetime | None
     median_discovery_latency_ms: float | None
 
@@ -167,22 +168,54 @@ class TokenRepository:
         rows = await self._session.scalars(select(Token.token_address).limit(limit))
         return set(rows)
 
-    async def addresses_missing_created_at(self, *, limit: int = 50) -> list[str]:
-        """Tokens we know about but have no creation timestamp for.
+    async def addresses_missing_created_at(
+        self, *, limit: int = 50, max_attempts: int = 5
+    ) -> list[str]:
+        """Tokens we know about, have no creation timestamp for, and may retry.
 
         Oldest sighting first: a mint that has been waiting is the one whose
         indexing race has definitely resolved, and the one whose token_age is
         blocking a tracking decision.
+
+        ``max_attempts`` is what keeps a permanently-unindexed mint from
+        occupying the queue forever. Measured: some tokens 404 on every attempt,
+        minutes apart — most likely external-launchpad mints that reach the
+        WebSocket but never enter pump.fun's own index.
         """
         rows = await self._session.scalars(
             select(Token.token_address)
-            .where(Token.created_at.is_(None))
+            .where(Token.created_at.is_(None), Token.backfill_attempts < max_attempts)
             .order_by(Token.discovered_at.asc())
             .limit(limit)
         )
         return list(rows)
 
-    async def stats(self) -> DiscoveryStats:
+    async def record_backfill_attempt(self, token_address: str) -> None:
+        """Count one attempt against a token's budget.
+
+        Incremented in the database, not in memory: a restart must not hand a
+        hopeless token a fresh budget, or the starvation this prevents simply
+        returns on the next deploy.
+        """
+        await self._session.execute(
+            update(Token)
+            .where(Token.token_address == token_address)
+            .values(backfill_attempts=Token.backfill_attempts + 1)
+        )
+        await self._session.commit()
+
+    async def count_backfill_exhausted(self, *, max_attempts: int = 5) -> int:
+        """Tokens that will never get a created_at from the primary."""
+        return (
+            await self._session.scalar(
+                select(func.count())
+                .select_from(Token)
+                .where(Token.created_at.is_(None), Token.backfill_attempts >= max_attempts)
+            )
+            or 0
+        )
+
+    async def stats(self, *, backfill_max_attempts: int = 5) -> DiscoveryStats:
         """Everything ``/status`` reports about discovery, measured on demand."""
         total = await self.count()
         by_state: dict[str, int] = {}
@@ -203,6 +236,9 @@ class TokenRepository:
             total=total,
             by_state=by_state,
             with_created_at=with_created_at,
+            backfill_exhausted=await self.count_backfill_exhausted(
+                max_attempts=backfill_max_attempts
+            ),
             last_discovered_at=_as_utc_or_none(last_discovered_at),
             median_discovery_latency_ms=await self._median_discovery_latency_ms(),
         )

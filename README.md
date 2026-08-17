@@ -49,8 +49,12 @@ python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
 Every phase ends here. It must be green before the next one starts.
 
 ```bash
-.venv/Scripts/ruff check . && .venv/Scripts/ruff format --check . && .venv/Scripts/mypy src && .venv/Scripts/pytest
+.venv/Scripts/ruff check . && .venv/Scripts/ruff format --check . && .venv/Scripts/mypy && .venv/Scripts/pytest
 ```
+
+The storage tests run against **both SQLite and a real PostgreSQL 16**, and the migrations
+are applied to a live server — upgrade, downgrade, upgrade, and stepwise. `pgserver`
+bundles the binary, so this needs no Docker and installs nothing system-wide.
 
 ## Data sources
 
