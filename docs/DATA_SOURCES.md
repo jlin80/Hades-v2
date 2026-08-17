@@ -1,0 +1,300 @@
+# Data sources — Phase 1
+
+Every number in this document was measured on **2026-08-17** by the scripts in
+`scripts/`, against live endpoints, from this machine. Nothing here is quoted from a
+provider's marketing page.
+
+Reproduce with:
+
+```bash
+.venv/Scripts/python scripts/probe_data_sources.py
+.venv/Scripts/python scripts/probe_pumpportal_ws.py
+```
+
+Phase 1 exists because Hades V1 shipped adapters for `jupiter` and `meteora` that
+returned **404** in production. So the rule for this document is: an endpoint is
+usable when it has been called and answered, not when it is documented.
+
+---
+
+## Selection
+
+| Role | Source | Why |
+|---|---|---|
+| **PRIMARY** | **pump.fun `frontend-api-v3`** | The only source with data from **t=0**, and the only one exposing bonding-curve reserves — from which price, liquidity and curve progress are *derived exactly and reproducibly* rather than taken on trust. |
+| **DISCOVERY** | **PumpPortal WebSocket**, `subscribeNewToken` | Push, sub-second, free, keyless. Removes polling latency from the one measurement where latency is the whole point. |
+| **FALLBACK** | **DexScreener** | Documented, 300 req/min, fastest measured (p50 10 ms), zero pushback under burst. Blind for the first ~1–2 minutes, so it is a *cross-check and continuity* source, not a substitute. |
+
+Per spec §6, exactly one primary and one fallback are wired. Everything else below is
+documented and deliberately **not** integrated.
+
+---
+
+## Measured results
+
+Latency: 5 sequential samples per endpoint. Burst: 20 concurrent requests.
+
+| Source | Status | p50 | worst | burst ok/429/err | wanted metrics |
+|---|---|---|---|---|---|
+| pump.fun `/coins/{mint}` | 200 | 91 ms | 471 ms | 20/0/0 | see below |
+| pump.fun `/coins?sort=created_timestamp` | 200 | 92 ms | 158 ms | 20/0/0 | discovery |
+| DexScreener `token-pairs/v1` | 200 | 10 ms | 176 ms | 20/0/0 | 6/13 |
+| DexScreener `latest/dex/tokens` | 200 | 10 ms | 86 ms | 20/0/0 | 6/13 |
+| GeckoTerminal `new_pools` | 200 | 12 ms | 13 ms | **0/20/0** | 9/13 |
+| GeckoTerminal `tokens/{m}/pools` | **429** | 9 ms | — | — | — |
+| Solana public RPC `/health` | 200 | 95 ms | 526 ms | 20/0/0 | none (liveness only) |
+
+**Sustained rate, pump.fun:** 60 requests at ~1.64 req/s over 37 s → **60/60 HTTP 200,
+zero 429**, p50 90 ms, p95 119 ms, max 537 ms.
+
+---
+
+## The finding that decided it: coverage vs. token age
+
+60 unique mints sampled from pump.fun across five offsets, then queried on DexScreener:
+
+| Age bucket | Has DexScreener data | Sampled | Coverage |
+|---|---|---|---|
+| **0–1 min** | **0** | 12 | **0 %** |
+| 1–5 min | 12 | 12 | 100 % |
+| 5–30 min | 24 | 24 | 100 % |
+| 30–120 min | 12 | 12 | 100 % |
+
+Twelve of twelve tokens under 40 seconds old returned **zero pairs**. The youngest
+token with data was 138 s old.
+
+This is disqualifying for DexScreener as primary, and it is not a reliability problem —
+it is an indexing lag, and it lands precisely on the window this whole system exists to
+study. Spec §8 asks for 10-second snapshots for the first 300 seconds. A source that
+has nothing to say for the first ~2 minutes cannot serve that.
+
+GeckoTerminal, checked on the five newest mints: **404 at 7 s, then 200 with 1 pool at
+20, 20, 25 and 26 s.** Materially better early coverage than DexScreener — and still
+ruled out, for the reason in the next section.
+
+---
+
+## PRIMARY — pump.fun `frontend-api-v3`
+
+```
+Base            https://frontend-api-v3.pump.fun
+Discovery       GET /coins?offset=0&limit=N&sort=created_timestamp&order=DESC&includeNsfw=true
+Snapshot        GET /coins/{mint}
+Auth            none
+Rate limit      unpublished; measured 1.64 req/s sustained and 20 concurrent, both clean
+Latency         p50 90 ms, p95 119 ms
+Cost            free
+```
+
+### What it returns
+
+Confirmed against a live 60-second-old mint. The full field set:
+
+`mint · name · symbol · creator · created_timestamp · last_trade_timestamp ·
+market_cap · market_cap_quote · market_cap_usd · usd_market_cap · ath_market_cap ·
+ath_market_cap_timestamp · virtual_sol_reserves · virtual_token_reserves ·
+real_sol_reserves · real_token_reserves · virtual_quote_reserves · real_quote_reserves ·
+total_supply · base_decimals · quote_decimals · quote_mint · complete ·
+bonding_curve · associated_bonding_curve · pool_address · program · protocol ·
+token_program · chain_id · reply_count · nsfw · is_banned · verified · initialized ·
+is_currently_live · description · image_uri · metadata_uri · twitter · updated_at`
+
+Timestamps are **milliseconds**; `updated_at` is **seconds**. That inconsistency is in
+the provider, and the normalizer must handle it explicitly rather than guess by
+magnitude.
+
+### Why the reserves matter more than any provider's price
+
+`virtual_sol_reserves` and `virtual_token_reserves` are the bonding curve's actual
+state. From them, price, market cap, liquidity and curve progress are **computed by us,
+from a documented formula, identically every time**. A provider-supplied `priceUsd` is
+a number we would have to trust and could never reproduce from stored data.
+
+This matters for spec §11 (immutable T0 snapshot): storing raw reserves means a feature
+recomputed a month later gives the same answer. Storing someone's derived price does not.
+
+It also resolves liquidity, which for a pre-graduation token has no AMM pool at all:
+`real_sol_reserves` **is** the liquidity, and it is the correct definition here.
+
+### Risks, stated plainly
+
+- **Undocumented and unofficial.** No contract, no changelog, no deprecation notice.
+  It can change shape or start refusing us tomorrow.
+- **Cloudflare-fronted** (`server: cloudflare` confirmed in response headers). It did
+  not challenge us at the rates tested, and that is not a guarantee at higher rates or
+  from a datacenter IP — the homelab is residential, which likely helps.
+- **This is the single largest technical risk in the project.** The mitigation is that
+  the fallback is already wired and the schema validated, so a break degrades coverage
+  instead of stopping collection. It is not a mitigation that survives the primary
+  disappearing permanently; if that happens, Phase 1 reopens.
+
+---
+
+## DISCOVERY — PumpPortal WebSocket
+
+```
+Endpoint        wss://pumpportal.fun/api/data
+Subscribe       {"method": "subscribeNewToken"}
+Auth            none for this method
+Cost            free
+```
+
+Measured: **11 token-creation events in 45 s (~0.24/s)**, one non-token frame. A pushed
+mint was cross-checked against pump.fun `/coins/{mint}` and confirmed to exist with a
+matching `created_timestamp`.
+
+Event fields: `mint · name · symbol · traderPublicKey · signature · txType · pool ·
+marketCapSol · initialBuy · solAmount · vSolInBondingCurve · vTokensInBondingCurve ·
+bondingCurveKey · uri · is_mayhem_mode`
+
+**~0.24 creations/s is ~21,000 tokens/day.** For context, V1's scanner recorded 2,122
+pumpfun tokens in 24 h — after a `≥ $5,000` liquidity filter. The order of magnitude is
+consistent, and it sets the real scale of the problem: **the constraint is not how fast
+we poll, it is how many tokens are worth tracking.** V1 learned this the hard way when
+raising its poll interval 12× changed nothing, because its scanner deduplicated by mint.
+
+### 🔴 `subscribeTokenTrade` is gated, and this costs us real features
+
+Tested and refused:
+
+> `'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when
+> connecting with an API key funded with at least 0.02 SOL.`
+
+A per-trade stream carries `traderPublicKey`, which is what would let us compute
+`unique_buyers`, `unique_sellers`, `buy_volume` and `sell_volume` **ourselves, exactly**.
+Without it those four metrics have no free source at the cadence we need. See
+"Metrics with no source" below — this is the open decision coming out of Phase 1.
+
+Funding a wallet is a financial action and is not something this project does on its
+own; it is the operator's call.
+
+---
+
+## FALLBACK — DexScreener
+
+```
+Base            https://api.dexscreener.com
+Primary path    GET /token-pairs/v1/solana/{mint}
+Legacy path     GET /latest/dex/tokens/{mint}      (still answers 200)
+Auth            none
+Rate limit      300 req/min on pairs endpoints (documented); 20 concurrent clean
+Latency         p50 10 ms
+Cost            free
+```
+
+Full payload for a live 259-second-old pump.fun pair (`dexId: "pumpfun"`):
+
+`chainId · dexId · url · pairAddress · baseToken{address,name,symbol} ·
+quoteToken{...} · priceNative · priceUsd · txns{m5,h1,h6,h24}{buys,sells} ·
+volume{m5,h1,h6,h24} · priceChange{m5,h1,h6,h24} · fdv · marketCap · pairCreatedAt`
+
+### 🔴 There is no `liquidity` field
+
+Not null — **absent**. Confirmed on the complete payload above. Spec §13 makes
+MIN_LIQUIDITY a mandatory gate on every signal, so a fallback that cannot supply it
+would leave that gate unevaluable.
+
+It is not fatal, because the primary supplies liquidity properly via
+`real_sol_reserves`. But it fixes the division of labour: **DexScreener cannot be
+promoted to primary without losing a risk gate**, regardless of how fast and reliable
+it is. Its schema is AMM-shaped; a bonding curve has no pool for it to describe.
+
+### What it is genuinely good for
+
+`txns.m5.buys` / `txns.m5.sells` and `volume.m5` — trade-flow signal the primary does
+not expose at all, from ~2 minutes onward. Plus an independent `priceUsd` to cross-check
+our derived price, which is how a silent formula error gets caught. And post-migration
+continuity, once a token graduates to PumpSwap and leaves the curve.
+
+---
+
+## Evaluated and deliberately not wired
+
+| Source | Verdict |
+|---|---|
+| **GeckoTerminal / CoinGecko onchain** | **The only source measured to supply `unique_buyers` and `unique_sellers`** (`transactions.m5.buyers`/`.sellers`), plus buys/sells and volume at m5 — 9/13 wanted metrics, the best of any source tested, with data from ~20 s. **Rejected on rate limit only:** the burst was **0/20 successful, 20 × 429**, and `tokens/{mint}/pools` returned 429 during the plain 5-sample latency pass. Keyless is ~10–30 calls/min. Tracking hundreds of tokens at 10-second intervals needs orders of magnitude more. **Reconsider immediately if a paid CoinGecko key appears** — it is the direct answer to our missing metrics. |
+| **Moralis** (`solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/new`) | Documented pump.fun endpoints, requires a key. Not tested — no key. Plausible future primary alternative. |
+| **Solana Tracker** (`/tokens/latest`) | Advertises sub-second new mints with pools, curve state, liquidity and a risk score. Paid. Not tested. The most complete-sounding paid option if the free primary breaks. |
+| **Bitquery** | Pump.fun REST/WebSocket/gRPC/Kafka, OHLCV, curve progress, top traders. Paid. Not tested. |
+| **bloXroute** `GetPumpFunNewTokensStream` | Creation stream with mint, creator, curve address. Paid/trader-oriented. Not tested. |
+| **Codex.io** | Pump.fun data API. Paid. Not tested. |
+| **Solana public RPC** (`api.mainnet-beta.solana.com`) | `/health` answers 200 at p50 95 ms, but it is not a data source for us: V1 measured public backups returning **429** on `getTokenLargestAccounts`, and no free provider serves that call. Reading the curve account directly would be the most authoritative path and needs a paid RPC. Not wired. |
+
+Per spec §6, none of these get integrated "just in case". Adding a third provider needs
+a named problem it solves.
+
+---
+
+## Metrics with no source, which stay NULL
+
+Spec §9: *if a metric is not available, NULL. Never invent data.*
+
+| Metric | Status |
+|---|---|
+| `unique_buyers`, `unique_sellers` | **No usable source.** GeckoTerminal has them but is rate-limited out; PumpPortal's trade stream needs a funded key. |
+| `buy_volume`, `sell_volume` | **No usable source.** Same two blocked paths. |
+| `holder_count` | **No free source found at all.** |
+| `buy_count`, `sell_count`, `volume` | DexScreener, **from ~2 min onward only.** NULL before that. |
+
+### 🔴 What this does to the EARLY MOMENTUM hypothesis
+
+Spec §12 sketches the first hypothesis as *"buying activity accelerating + volume
+increasing + sell pressure below threshold"*, and §10 lists `buyer_velocity`,
+`buyer_acceleration` and `buy_volume_ratio` among the features. **Those specific
+features are not computable from any free source in the 0–2 minute window** — which is
+exactly the window the hypothesis is about.
+
+What *is* computable from t=0, at 10-second cadence, from the primary alone:
+
+- `token_age_seconds`
+- `price` and `market_cap` (derived from virtual reserves)
+- `liquidity` (`real_sol_reserves`)
+- `bonding_curve_progress` (derived from reserves and `total_supply`)
+- **net SOL flow** between consecutive snapshots — signed, so direction is known, but
+  gross buys and gross sells are not separable from it
+- `price_velocity`, `market_cap_velocity`, `liquidity_change`, and the second
+  derivatives of each
+- `time_since_last_trade` (from `last_trade_timestamp`)
+- `reply_count` and its velocity — social activity, free, and V1 never used it
+
+That is a real momentum measure and a legitimate Phase 5 hypothesis. It is **not** the
+one written in §12, and pretending otherwise would be the kind of quiet substitution
+this project exists to avoid. The decision below is the operator's.
+
+---
+
+## Open decision for Phase 2
+
+Collection can start today on the primary + fallback above, with the four metrics above
+recorded as NULL. Three ways to close the gap, in increasing cost:
+
+1. **Start collecting now, accept NULLs.** Phase 5's hypothesis is built on
+   price/mcap/liquidity/curve velocity and acceleration. Costs nothing, starts the data
+   clock immediately, and the missing columns can be backfilled for *future* tokens
+   later — never for past ones.
+2. **Fund a PumpPortal API key (0.02 SOL).** Unlocks `subscribeTokenTrade`, which makes
+   unique buyers/sellers and the volume split computable exactly, by us, from raw
+   trades. Cheapest real fix. Requires the operator to move funds.
+3. **Paid data plan** — CoinGecko/GeckoTerminal (direct answer, already validated as
+   having the fields) or Solana Tracker (most complete). Recurring cost, and it buys
+   provider aggregates rather than raw trades.
+
+**Recommendation: (1) now, (2) alongside it.** The expensive thing is not the data, it
+is the *elapsed time* — no amount of money later recovers tokens that were born while we
+were still deciding. Option 2 can be added at any point without discarding anything
+already collected.
+
+---
+
+## Rules every provider adapter must follow (spec §6)
+
+Timeout · limited retry · exponential backoff · rate-limit handling · schema validation ·
+structured error logging · simple circuit breaker if needed.
+
+Never `except Exception: pass`. Never mark a provider healthy without a real check —
+`Database.check_health()` already sets the pattern: measure, do not assume.
+
+And one addition drawn from V1's four sessions of misattributed timeouts: **every
+outbound client gets an explicit `httpx.Limits`.** V1 had none anywhere, which let each
+client open 100 concurrent connections; the probe scripts here set it explicitly, and
+the adapters must too.

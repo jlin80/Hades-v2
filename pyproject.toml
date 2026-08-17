@@ -24,6 +24,9 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.9",
     "mypy>=1.14",
+    # Used by scripts/probe_pumpportal_ws.py. Pure Python with an optional C
+    # extension it falls back from, so it is safe on the Bobcat (see D8).
+    "websockets>=14",
 ]
 
 [tool.setuptools.dynamic]
@@ -43,11 +46,13 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "ASYNC", "T20"
 [tool.ruff.lint.per-file-ignores]
 "migrations/*" = ["N", "T20"]
 "tests/*" = ["T20"]
+# The probe scripts are terminal tools; printing a report is what they are for.
+"scripts/*" = ["T20"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
