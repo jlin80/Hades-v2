@@ -14,6 +14,7 @@ from hades.config import Settings
 from hades.db.engine import Database
 from hades.features.engine import FeatureWindows
 from hades.signals.early_momentum import EarlyMomentumConfig, EarlyMomentumStrategy
+from hades.signals.notify import DiscordNotifier
 from hades.signals.service import SignalService
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ def build_strategy(settings: Settings) -> EarlyMomentumStrategy:
 
 
 def build_signal_service(database: Database, settings: Settings) -> SignalService:
+    notifier = (
+        DiscordNotifier(settings.discord_webhook_url) if settings.discord_webhook_url else None
+    )
     return SignalService(
         database,
         build_strategy(settings),
@@ -52,6 +56,7 @@ def build_signal_service(database: Database, settings: Settings) -> SignalServic
         batch_size=settings.signal_batch_size,
         pass_interval_seconds=settings.signal_pass_interval_seconds,
         observation_min_interval_seconds=settings.signal_observation_min_interval_seconds,
+        notifier=notifier,
     )
 
 
@@ -105,4 +110,6 @@ class SignalRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        if self._service is not None:
+            await self._service.aclose()
         logger.info("signals_stopped")

@@ -28,6 +28,7 @@ from hades.db.models import MarketSnapshot as SnapshotRow
 from hades.features.engine import FeatureWindows, compute_features
 from hades.features.series import Observation, SnapshotSeries
 from hades.signals.models import MarketState
+from hades.signals.notify import DiscordNotifier
 from hades.signals.repository import Candidate, SignalRepository
 from hades.signals.strategy import Strategy
 
@@ -72,6 +73,7 @@ class SignalService:
         batch_size: int = 25,
         pass_interval_seconds: float = 5.0,
         observation_min_interval_seconds: float = 0.0,
+        notifier: DiscordNotifier | None = None,
     ) -> None:
         self._database = database
         self._strategy = strategy
@@ -80,6 +82,11 @@ class SignalService:
         self._batch_size = batch_size
         self._pass_interval_seconds = pass_interval_seconds
         self._observation_min_interval_seconds = observation_min_interval_seconds
+        # Optional and best-effort. A signal is already durable in Postgres the
+        # moment it is recorded, so a missing or failing notifier must never
+        # change what this loop does — only whether a human hears about it
+        # sooner than by polling /status.
+        self._notifier = notifier
         self.counters = SignalCounters()
 
     @property
@@ -199,6 +206,12 @@ class SignalService:
                     }
                 },
             )
+            if self._notifier is not None:
+                # Not awaited into the critical path in spirit, but awaited in
+                # code: send_signal never raises (see notify.py), so this costs
+                # at most one webhook timeout per signal, and signals fire at
+                # ~2.4% of evaluations, not per pass.
+                await self._notifier.send_signal(signal, vector.values)
         else:
             self.counters.signals_duplicate += 1
         return recorded
@@ -233,6 +246,10 @@ class SignalService:
                     },
                 )
         return fired
+
+    async def aclose(self) -> None:
+        if self._notifier is not None:
+            await self._notifier.aclose()
 
     async def run(self) -> None:
         logger.info(
