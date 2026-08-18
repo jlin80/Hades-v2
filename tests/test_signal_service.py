@@ -333,6 +333,50 @@ class TestServiceLoop:
         assert (await session.scalar(select(func.count()).select_from(FeatureObservation))) == 1
         assert (await session.scalar(select(func.count()).select_from(SignalRow))) == 0
 
+    async def test_the_notifier_fires_only_on_a_newly_recorded_signal(
+        self, session: AsyncSession
+    ) -> None:
+        """Not on every pass, and not on a duplicate.
+
+        A duplicate signal is already suppressed before this point (spec: a
+        strategy fires at most once per observation), so the notifier must not
+        re-announce something a human was already told about.
+        """
+
+        class RecordingNotifier:
+            def __init__(self) -> None:
+                self.sent: list[Signal] = []
+
+            async def send_signal(self, signal: Signal, values: dict[str, float | None]) -> None:
+                self.sent.append(signal)
+
+            async def aclose(self) -> None:
+                return None
+
+        await seed_tracked_token(session)
+        notifier = RecordingNotifier()
+        service = SignalService(
+            FakeDatabase(session),  # type: ignore[arg-type]
+            AlwaysFires(),
+            notifier=notifier,  # type: ignore[arg-type]
+        )
+
+        assert await service.run_once() == 1
+        assert len(notifier.sent) == 1
+        assert notifier.sent[0].token_address == MINT
+
+        # A second pass over the same, now-evaluated snapshot fires nothing new.
+        assert await service.run_once() == 0
+        assert len(notifier.sent) == 1
+
+    async def test_no_notifier_configured_does_not_break_the_loop(
+        self, session: AsyncSession
+    ) -> None:
+        await seed_tracked_token(session)
+        service = SignalService(FakeDatabase(session), AlwaysFires())  # type: ignore[arg-type]
+        assert await service.run_once() == 1
+        await service.aclose()  # must not raise with no notifier
+
     async def test_a_second_pass_over_the_same_snapshot_does_nothing(
         self, session: AsyncSession
     ) -> None:

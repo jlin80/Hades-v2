@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     signal_min_observations: float = Field(default=3.0, ge=2)
     signal_max_freshness_seconds: float = Field(default=30.0, gt=0)
 
+    # Optional. None means no notifier is built at all -- a missing webhook is
+    # not a degraded feature, it is simply absent, matching how every other
+    # optional integration in this codebase behaves.
+    discord_webhook_url: str | None = Field(default=None, repr=False)
+
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)
     provider_max_connections: int = Field(default=10, ge=1, le=100)
