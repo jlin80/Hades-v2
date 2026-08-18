@@ -9,8 +9,14 @@ Four tables, each arriving with the phase that produces it:
   instant, which spec §11 requires and §16 uses as the research dataset.
 * ``signals`` (Phase 5) — research signals, pointing at the observation they
   were computed from.
+* ``risk_decisions`` and ``paper_trades`` (Phase 6) — every verdict, and the
+  simulated trades the approved ones produced.
+* ``observation_outcomes`` (Phase 7) — what happened after each observation,
+  one row per labelling scheme.
 
-Paper trades and outcomes arrive with Phases 6 and 7.
+Almost everything here is append-only. ``observation_outcomes`` is the one
+deliberate exception: a label is a running measurement that starts UNRESOLVED
+and is rewritten until its window elapses.
 """
 
 from __future__ import annotations
@@ -308,6 +314,69 @@ class SignalRow(Base):
     conditions: Mapped[list[Any]] = mapped_column(_JSONB, nullable=False)
     stored_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ObservationOutcome(Base):
+    """What happened after an observation (spec §15).
+
+    One row per (observation, labelling scheme), because §15 asks for multiple
+    barrier configurations and "+30% before -20%?" is only one of the questions
+    the dataset should answer.
+
+    Written for **every** observation, whether or not a signal fired. The
+    observations we did not act on are the counterfactual; without them the
+    dataset can describe our trades and cannot say whether the hypothesis is any
+    good.
+
+    Unlike ``feature_observations`` this table *is* mutable: a label starts
+    UNRESOLVED and is rewritten as the window elapses. That is the one place
+    mutation is correct — the row is a running measurement, not a record of a
+    decision — and ``is_final`` marks the point past which it stops changing.
+    """
+
+    __tablename__ = "observation_outcomes"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "label_config", name="uq_observation_outcomes_config"),
+        Index("ix_observation_outcomes_pending", "is_final", "computed_at"),
+        Index("ix_observation_outcomes_label", "label_config", "label"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    observation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("feature_observations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    token_address: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    label_config: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(16), nullable=False)
+    barrier_hit_at_seconds: Mapped[float | None] = mapped_column(Float)
+    is_final: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+
+    return_1m: Mapped[float | None] = mapped_column(Float)
+    return_5m: Mapped[float | None] = mapped_column(Float)
+    return_15m: Mapped[float | None] = mapped_column(Float)
+    return_30m: Mapped[float | None] = mapped_column(Float)
+    return_1h: Mapped[float | None] = mapped_column(Float)
+
+    # Maximum favourable and adverse excursion. §15 asks for these because a
+    # token that ran +80% and came back to flat is a different fact from one
+    # that never moved, and the terminal return cannot tell them apart.
+    mfe: Mapped[float | None] = mapped_column(Float)
+    mae: Mapped[float | None] = mapped_column(Float)
+    mfe_at_seconds: Mapped[float | None] = mapped_column(Float)
+    mae_at_seconds: Mapped[float | None] = mapped_column(Float)
+
+    observations_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 

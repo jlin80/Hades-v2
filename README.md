@@ -1,4 +1,4 @@
-# Hades V2
+﻿# Hades V2
 
 Quantitative research system for **Pump.fun tokens on Solana**. Paper trading only.
 
@@ -8,11 +8,11 @@ The goal is not a complex bot. It is a system that can answer, with real data:
 > value and produce a positive expectancy after slippage, fees and risk?*
 
 This is a **greenfield rebuild**. Hades V1 (`../Hades`) is reference material for
-mistakes and reusable decisions — not a codebase to port. See `docs/DECISIONS.md`.
+mistakes and reusable decisions â€” not a codebase to port. See `docs/DECISIONS.md`.
 
 ## Status
 
-**Phases 0–5 complete.** Phases advance only when the current one passes its gate;
+**Phases 0â€“5 complete.** Phases advance only when the current one passes its gate;
 nothing beyond Phase 5 is built.
 
 Discovery and tracking are both **off by default** (`HADES_DISCOVERY_ENABLED`,
@@ -21,14 +21,14 @@ side effect.
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Repo, config, PostgreSQL, Alembic, Docker, logging, FastAPI, health/status, tests | ✅ |
-| 1 | Verify real data sources → [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | ✅ |
-| 2 | Token discovery — discover, validate, persist, deduplicate, recover | ✅ |
-| 3 | Adaptive snapshot tracking, persistence, validation, stale detection | ✅ |
-| 4 | Feature engine — [`docs/FEATURES.md`](docs/FEATURES.md) | ✅ |
-| 5 | Signal research — one hypothesis → [`docs/SIGNALS.md`](docs/SIGNALS.md) | ✅ |
-| 6 | Paper trading | ⬜ next |
-| 7 | Outcome + analytics | ⬜ |
+| 0 | Repo, config, PostgreSQL, Alembic, Docker, logging, FastAPI, health/status, tests | âœ… |
+| 1 | Verify real data sources â†’ [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) | âœ… |
+| 2 | Token discovery â€” discover, validate, persist, deduplicate, recover | âœ… |
+| 3 | Adaptive snapshot tracking, persistence, validation, stale detection | âœ… |
+| 4 | Feature engine â€” [`docs/FEATURES.md`](docs/FEATURES.md) | âœ… |
+| 5 | Signal research â€” one hypothesis â†’ [`docs/SIGNALS.md`](docs/SIGNALS.md) | âœ… |
+| 6 | Paper trading | â¬œ next |
+| 7 | Outcome + analytics | â¬œ |
 
 ## Run it
 
@@ -54,7 +54,7 @@ Every phase ends here. It must be green before the next one starts.
 ```
 
 The storage tests run against **both SQLite and a real PostgreSQL 16**, and the migrations
-are applied to a live server — upgrade, downgrade, upgrade, and stepwise. `pgserver`
+are applied to a live server â€” upgrade, downgrade, upgrade, and stepwise. `pgserver`
 bundles the binary, so this needs no Docker and installs nothing system-wide.
 
 ## Data sources
@@ -63,7 +63,7 @@ Primary **pump.fun `frontend-api-v3`** (data from t=0, bonding-curve reserves), 
 via **PumpPortal WebSocket** (push, ~0.24 creations/s measured), fallback **DexScreener**
 (fast and documented, but blind for the first ~2 minutes and supplies no liquidity field).
 
-All of that was measured, not assumed — rerun the evidence with:
+All of that was measured, not assumed â€” rerun the evidence with:
 
 ```bash
 .venv/Scripts/python scripts/probe_data_sources.py
@@ -71,7 +71,7 @@ All of that was measured, not assumed — rerun the evidence with:
 ```
 
 Four metrics have no usable free source and stay NULL: `unique_buyers`,
-`unique_sellers`, `buy_volume`, `sell_volume`. That constrains the Phase 5 hypothesis —
+`unique_sellers`, `buy_volume`, `sell_volume`. That constrains the Phase 5 hypothesis â€”
 see the open decision at the end of [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md).
 
 ## Discovery
@@ -94,12 +94,12 @@ That writes to a throwaway SQLite file, never to Postgres.
 
 Snapshots on an age-adaptive schedule (10s for the first 5 min, then 30s, then 60s),
 storing raw bonding-curve reserves as the primary record and deriving price, market cap
-and liquidity from them — verified against the provider's own figure to five decimals.
+and liquidity from them â€” verified against the provider's own figure to five decimals.
 
 **Tracking the whole universe is impossible by ~100x.** The primary sustains 1.64 req/s;
-Pump.fun creates 0.24–0.55 tokens/s; the schedule costs 434 snapshots per token per day.
-So the system tracks a bounded sample — 40 concurrent tokens over a one-hour horizon,
-about 1.2 req/s — and `/status` reports `eligible_waiting`, the sample it is declining to
+Pump.fun creates 0.24â€“0.55 tokens/s; the schedule costs 434 snapshots per token per day.
+So the system tracks a bounded sample â€” 40 concurrent tokens over a one-hour horizon,
+about 1.2 req/s â€” and `/status` reports `eligible_waiting`, the sample it is declining to
 take. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D13.
 
 ```bash
@@ -108,14 +108,14 @@ take. See [`docs/DECISIONS.md`](docs/DECISIONS.md) D13.
 
 ## Features
 
-41 features, all pure functions of a snapshot series — no I/O, no clock, so every number
+41 features, all pure functions of a snapshot series â€” no I/O, no clock, so every number
 in the dataset can be recomputed and checked. Look-ahead is impossible by signature:
 `compute_features(series, as_of=...)` truncates before anything runs.
 
 Missing inputs give `None`, never `0.0`, and every rate divides by **observed** elapsed
 time rather than the configured interval (measured: ~12.2s versus 10s).
 
-The features §10 asks for that need per-trade data are absent, not faked — see
+The features Â§10 asks for that need per-trade data are absent, not faked â€” see
 [`docs/FEATURES.md`](docs/FEATURES.md) for the full set, the substitutes, and what that
 means for Phase 5's hypothesis.
 
@@ -125,16 +125,16 @@ means for Phase 5's hypothesis.
 
 ## Signals
 
-One hypothesis — EARLY MOMENTUM — evaluated over tracked tokens, producing **research
+One hypothesis â€” EARLY MOMENTUM â€” evaluated over tracked tokens, producing **research
 signals and never an order**. Nothing here claims it works; every threshold is a plausible
 starting point, not a value derived from evidence.
 
-Every evaluation writes an immutable feature vector (spec §11), and only some produce a
+Every evaluation writes an immutable feature vector (spec Â§11), and only some produce a
 signal. That asymmetry is the point: a signal count means nothing without the number of
 chances there were to fire.
 
 Measured over 200 seconds live: **211 observations, 5 signals (2.4%)**, and the per-clause
-breakdown says something the system did not know before — 85% of observations were of
+breakdown says something the system did not know before â€” 85% of observations were of
 tokens holding under 1 SOL, and 72% were of tokens whose curve had not moved. Most Pump.fun
 tokens are dead on arrival. See [`docs/SIGNALS.md`](docs/SIGNALS.md).
 
@@ -144,7 +144,7 @@ tokens are dead on arrival. See [`docs/SIGNALS.md`](docs/SIGNALS.md).
 
 ## Safety
 
-No private keys, no signer, no transaction submission — enforced by an AST scan in
+No private keys, no signer, no transaction submission â€” enforced by an AST scan in
 `tests/test_safety.py` that fails the build if a signing library or key-material
 identifier reaches `src/`. See `docs/SAFETY.md`.
 
@@ -156,10 +156,10 @@ src/hades/
   logging.py      stdlib JSON-lines logging
   db/             engine + session lifecycle, ORM models
   providers/      pump.fun (primary), PumpPortal (discovery), shared HTTP policy
-  discovery/      Phase 2 — idempotent token discovery
-  tracking/       Phase 3 — adaptive snapshots, curve derivations
-  features/       Phase 4 — pure feature functions
-  signals/        Phase 5 — the one hypothesis, immutable observations
+  discovery/      Phase 2 â€” idempotent token discovery
+  tracking/       Phase 3 â€” adaptive snapshots, curve derivations
+  features/       Phase 4 â€” pure feature functions
+  signals/        Phase 5 â€” the one hypothesis, immutable observations
   api/            FastAPI app, /health, /status
 migrations/       Alembic
 scripts/          probes and smoke runs against live sources (reproducible evidence)
@@ -167,3 +167,4 @@ docs/             DATA_SOURCES.md, FEATURES.md, SIGNALS.md, DECISIONS.md, SAFETY
                   DEPLOYMENT.md
 tests/
 ```
+
