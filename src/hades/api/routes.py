@@ -17,6 +17,7 @@ from hades.api.schemas import (
     DatabaseStatus,
     DiscoveryStatus,
     HealthResponse,
+    PaperStatus,
     SignalStatus,
     StatusResponse,
     TrackingStatus,
@@ -27,6 +28,7 @@ from hades.db.models import TokenState
 from hades.discovery.repository import TokenRepository
 from hades.discovery.runtime import DiscoveryRuntime
 from hades.features.engine import FEATURE_VERSION
+from hades.paper.runtime import PaperRuntime
 from hades.signals.repository import SignalRepository
 from hades.signals.runtime import SignalRuntime
 from hades.tracking.repository import TrackingRepository
@@ -36,7 +38,7 @@ router = APIRouter(tags=["observability"])
 
 # Counters whose producing phase does not exist yet. Named explicitly so the
 # payload states its own incompleteness instead of implying zeros.
-NOT_IMPLEMENTED_METRICS = ("paper_trades",)
+NOT_IMPLEMENTED_METRICS: tuple[str, ...] = ()
 
 
 def get_database(request: Request) -> Database:
@@ -61,6 +63,11 @@ def get_tracking(request: Request) -> TrackingRuntime:
 
 def get_signals(request: Request) -> SignalRuntime:
     runtime: SignalRuntime = request.app.state.signals
+    return runtime
+
+
+def get_paper(request: Request) -> PaperRuntime:
+    runtime: PaperRuntime = request.app.state.paper
     return runtime
 
 
@@ -94,6 +101,7 @@ async def status(
     discovery: Annotated[DiscoveryRuntime, Depends(get_discovery)],
     tracking: Annotated[TrackingRuntime, Depends(get_tracking)],
     signals: Annotated[SignalRuntime, Depends(get_signals)],
+    paper: Annotated[PaperRuntime, Depends(get_paper)],
 ) -> StatusResponse:
     db_health = await database.check_health()
 
@@ -126,6 +134,13 @@ async def status(
         strategy=signals.strategy,
         strategy_version=signals.strategy_version,
         feature_version=FEATURE_VERSION,
+    )
+
+    paper_status = PaperStatus(
+        enabled=settings.paper_trading_enabled,
+        running=paper.is_running,
+        last_error=paper.last_error,
+        counters=paper.counters,
     )
 
     tokens_discovered: int | None = None
@@ -177,6 +192,17 @@ async def status(
                 }
             )
 
+        if paper.service is not None:
+            state = await paper.service.portfolio()
+            paper_status = paper_status.model_copy(
+                update={
+                    "balance_sol": state.balance_sol,
+                    "equity_sol": state.current_equity_sol,
+                    "open_positions": state.open_positions,
+                    "trades_total": paper.counters.get("filled", 0),
+                }
+            )
+
     started_at: float = request.app.state.started_at
     return StatusResponse(
         status="healthy" if db_health.connected else "degraded",
@@ -190,5 +216,6 @@ async def status(
         discovery=discovery_status,
         tracking=tracking_status,
         signals=signal_status,
+        paper=paper_status,
         not_implemented=list(NOT_IMPLEMENTED_METRICS),
     )

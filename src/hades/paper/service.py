@@ -35,6 +35,7 @@ from sqlalchemy import Row, func, select, update
 from hades.db.engine import Database
 from hades.db.models import (
     ExitReason,
+    FeatureObservation,
     MarketSnapshot,
     PaperTrade,
     RiskDecisionRow,
@@ -44,9 +45,29 @@ from hades.db.models import (
 )
 from hades.paper.curve import estimate_buy_slippage, simulate_buy, simulate_sell
 from hades.paper.exits import ExitRules, decide_exit
+from hades.paper.notify import PaperDiscordNotifier
 from hades.risk.engine import RiskEngine, RiskState
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CurveSnapshot:
+    """Curve state read back from a stored ``MarketSnapshot``, in whole units.
+
+    Carries market cap alongside the raw reserves so a notification can report
+    "bought $10 of a token at a $30k market cap" without a second query --
+    everything the curve math and everything a human would want to see comes
+    from the same row.
+    """
+
+    observed_at: datetime
+    virtual_sol: float | None
+    virtual_tokens: float | None
+    liquidity_sol: float | None
+    price_sol: float | None
+    market_cap_sol: float | None
+    market_cap_usd: float | None
 
 
 @dataclass
@@ -93,12 +114,22 @@ class PaperTradingService:
         risk: RiskEngine | None = None,
         exit_rules: ExitRules | None = None,
         config: PaperConfig | None = None,
+        notifier: PaperDiscordNotifier | None = None,
     ) -> None:
         self._database = database
         self._risk = risk or RiskEngine()
         self._exits = exit_rules or ExitRules()
         self._config = config or PaperConfig()
+        # Optional and best-effort, same contract as the signal notifier: a
+        # trade is already durable in Postgres the moment it fills or closes,
+        # so a missing or failing notifier must never change what this loop
+        # does, only whether a human hears about it before polling /status.
+        self._notifier = notifier
         self.counters = PaperCounters()
+
+    async def aclose(self) -> None:
+        if self._notifier is not None:
+            await self._notifier.aclose()
 
     # --- portfolio ---------------------------------------------------------
 
@@ -212,19 +243,18 @@ class PaperTradingService:
             if snapshot is None:
                 continue
 
-            observed_at, virtual_sol, virtual_tokens, liquidity, _price = snapshot
             token_age = (
-                (_as_utc(observed_at) - _as_utc(token_created)).total_seconds()
+                (_as_utc(snapshot.observed_at) - _as_utc(token_created)).total_seconds()
                 if token_created
                 else None
             )
             slippage = (
                 estimate_buy_slippage(
                     sol_in=self._config.position_size_sol,
-                    virtual_sol=virtual_sol,
-                    virtual_tokens=virtual_tokens,
+                    virtual_sol=snapshot.virtual_sol,
+                    virtual_tokens=snapshot.virtual_tokens,
                 )
-                if virtual_sol and virtual_tokens
+                if snapshot.virtual_sol and snapshot.virtual_tokens
                 else None
             )
 
@@ -233,7 +263,7 @@ class PaperTradingService:
                 signal_created_at=_as_utc(created_at),
                 decision_at=decision_at,
                 token_age_seconds=token_age,
-                liquidity_sol=liquidity,
+                liquidity_sol=snapshot.liquidity_sol,
                 estimated_slippage=slippage,
                 state=state,
                 requested_size_sol=self._config.position_size_sol,
@@ -308,15 +338,14 @@ class PaperTradingService:
             if snapshot is None:
                 continue
 
-            observed_at, virtual_sol, virtual_tokens, _liquidity, _price = snapshot
             fill = (
                 simulate_buy(
                     sol_in=trade.position_size_sol,
-                    virtual_sol=virtual_sol,
-                    virtual_tokens=virtual_tokens,
+                    virtual_sol=snapshot.virtual_sol,
+                    virtual_tokens=snapshot.virtual_tokens,
                     fee_rate=self._config.fee_rate,
                 )
-                if virtual_sol and virtual_tokens
+                if snapshot.virtual_sol and snapshot.virtual_tokens
                 else None
             )
             async with self._database.session() as session:
@@ -335,7 +364,7 @@ class PaperTradingService:
                         .where(PaperTrade.id == trade.id)
                         .values(
                             state=TradeState.OPEN,
-                            entry_time=_as_utc(observed_at),
+                            entry_time=_as_utc(snapshot.observed_at),
                             entry_price=fill.effective_price,
                             entry_tokens=fill.tokens_out,
                             entry_fee_sol=fill.fee_sol,
@@ -346,7 +375,53 @@ class PaperTradingService:
                     filled += 1
                     self.counters.filled += 1
                 await session.commit()
+
+            if fill is not None and self._notifier is not None:
+                # Outside the write transaction and after commit: a webhook
+                # failure must never roll back a fill that already happened.
+                await self._notify_trade_opened(trade, fill, snapshot)
         return filled
+
+    async def _notify_trade_opened(
+        self, trade: PaperTrade, fill: object, snapshot: CurveSnapshot
+    ) -> None:
+        if self._notifier is None:  # pragma: no cover — guarded by the caller
+            return
+        state = await self.portfolio(token_id=trade.token_id)
+        symbol = await self._token_symbol(trade.token_id)
+        counts = await self._pipeline_counts()
+        await self._notifier.send_trade_opened(
+            token_address=trade.token_address,
+            token_symbol=symbol,
+            position_size_sol=trade.position_size_sol,
+            entry_price_sol=fill.effective_price,  # type: ignore[attr-defined]
+            entry_slippage=fill.slippage_fraction,  # type: ignore[attr-defined]
+            market_cap_sol=snapshot.market_cap_sol,
+            market_cap_usd=snapshot.market_cap_usd,
+            sol_price_usd=_implied_sol_price_usd(snapshot),
+            balance_sol=state.balance_sol,
+            equity_sol=state.current_equity_sol,
+            open_positions=state.open_positions,
+            observations_total=counts[0],
+            signals_total=counts[1],
+            trades_total=counts[2],
+        )
+
+    async def _token_symbol(self, token_id: object) -> str | None:
+        async with self._database.session() as session:
+            return await session.scalar(select(Token.symbol).where(Token.id == token_id))
+
+    async def _pipeline_counts(self) -> tuple[int, int, int]:
+        """(observations, signals, trades) so far -- the "cuantos analisis" in a
+        notification. One extra round of cheap counts, paid only when a trade
+        actually opens (~2.4% of evaluations, not per pass)."""
+        async with self._database.session() as session:
+            observations = (
+                await session.scalar(select(func.count()).select_from(FeatureObservation))
+            ) or 0
+            signals = (await session.scalar(select(func.count()).select_from(SignalRow))) or 0
+            trades = (await session.scalar(select(func.count()).select_from(PaperTrade))) or 0
+        return observations, signals, trades
 
     async def manage_open(self, *, now: datetime | None = None) -> int:
         """Mark open positions and close the ones whose rules fired."""
@@ -375,21 +450,20 @@ class PaperTradingService:
             snapshot = await self._latest_snapshot(trade.token_id)
             if snapshot is None:
                 continue
-            observed_at, virtual_sol, virtual_tokens, _liquidity, price = snapshot
             if trade.entry_price is None or trade.entry_time is None:
                 continue
 
-            held = (_as_utc(observed_at) - _as_utc(trade.entry_time)).total_seconds()
+            held = (_as_utc(snapshot.observed_at) - _as_utc(trade.entry_time)).total_seconds()
             evaluation = decide_exit(
                 entry_price=trade.entry_price,
-                current_price=price,
+                current_price=snapshot.price_sol,
                 peak_price=trade.peak_price,
                 held_seconds=held,
                 rules=self._exits,
                 risk_exit=risk_exit,
             )
 
-            peak = max(trade.peak_price or trade.entry_price, price or 0.0)
+            peak = max(trade.peak_price or trade.entry_price, snapshot.price_sol or 0.0)
             if not evaluation.should_exit:
                 async with self._database.session() as session:
                     await session.execute(
@@ -398,30 +472,23 @@ class PaperTradingService:
                     await session.commit()
                 continue
 
-            if await self._close(
-                trade, observed_at, virtual_sol, virtual_tokens, evaluation.reason
-            ):
+            if await self._close(trade, snapshot, evaluation.reason):
                 closed += 1
         return closed
 
     async def _close(
-        self,
-        trade: PaperTrade,
-        observed_at: datetime,
-        virtual_sol: float | None,
-        virtual_tokens: float | None,
-        reason: ExitReason | None,
+        self, trade: PaperTrade, snapshot: CurveSnapshot, reason: ExitReason | None
     ) -> bool:
         if trade.entry_tokens is None or trade.entry_price is None:
             return False
         fill = (
             simulate_sell(
                 tokens_in=trade.entry_tokens,
-                virtual_sol=virtual_sol,
-                virtual_tokens=virtual_tokens,
+                virtual_sol=snapshot.virtual_sol,
+                virtual_tokens=snapshot.virtual_tokens,
                 fee_rate=self._config.fee_rate,
             )
-            if virtual_sol and virtual_tokens
+            if snapshot.virtual_sol and snapshot.virtual_tokens
             else None
         )
         if fill is None:
@@ -443,7 +510,7 @@ class PaperTradingService:
                 .where(PaperTrade.id == trade.id)
                 .values(
                     state=TradeState.CLOSED,
-                    exit_time=_as_utc(observed_at),
+                    exit_time=_as_utc(snapshot.observed_at),
                     exit_price=fill.effective_price,
                     exit_sol=fill.sol_out,
                     exit_fee_sol=fill.fee_sol,
@@ -469,23 +536,38 @@ class PaperTradingService:
                 }
             },
         )
+
+        if self._notifier is not None:
+            state = await self.portfolio()
+            symbol = await self._token_symbol(trade.token_id)
+            await self._notifier.send_trade_closed(
+                token_address=trade.token_address,
+                token_symbol=symbol,
+                exit_reason=reason.value if reason else "UNKNOWN",
+                net_pnl_sol=net,
+                fees_sol=fees,
+                balance_sol=state.balance_sol,
+                equity_sol=state.current_equity_sol,
+            )
         return True
 
     # --- helpers -----------------------------------------------------------
 
-    async def _latest_snapshot(
-        self, token_id: object
-    ) -> tuple[datetime, float | None, float | None, float | None, float | None] | None:
+    _SNAPSHOT_COLUMNS = (
+        MarketSnapshot.observed_at,
+        MarketSnapshot.virtual_sol_reserves,
+        MarketSnapshot.virtual_token_reserves,
+        MarketSnapshot.liquidity_sol,
+        MarketSnapshot.price_sol,
+        MarketSnapshot.market_cap_sol,
+        MarketSnapshot.market_cap_usd,
+    )
+
+    async def _latest_snapshot(self, token_id: object) -> CurveSnapshot | None:
         async with self._database.session() as session:
             row = (
                 await session.execute(
-                    select(
-                        MarketSnapshot.observed_at,
-                        MarketSnapshot.virtual_sol_reserves,
-                        MarketSnapshot.virtual_token_reserves,
-                        MarketSnapshot.liquidity_sol,
-                        MarketSnapshot.price_sol,
-                    )
+                    select(*self._SNAPSHOT_COLUMNS)
                     .where(MarketSnapshot.token_id == token_id)
                     .order_by(MarketSnapshot.observed_at.desc())
                     .limit(1)
@@ -495,17 +577,11 @@ class PaperTradingService:
 
     async def _snapshot_at_or_before(
         self, token_id: object, moment: datetime
-    ) -> tuple[datetime, float | None, float | None, float | None, float | None] | None:
+    ) -> CurveSnapshot | None:
         async with self._database.session() as session:
             row = (
                 await session.execute(
-                    select(
-                        MarketSnapshot.observed_at,
-                        MarketSnapshot.virtual_sol_reserves,
-                        MarketSnapshot.virtual_token_reserves,
-                        MarketSnapshot.liquidity_sol,
-                        MarketSnapshot.price_sol,
-                    )
+                    select(*self._SNAPSHOT_COLUMNS)
                     .where(
                         MarketSnapshot.token_id == token_id,
                         MarketSnapshot.observed_at <= moment,
@@ -518,17 +594,11 @@ class PaperTradingService:
 
     async def _snapshot_at_or_after(
         self, token_id: object, moment: datetime
-    ) -> tuple[datetime, float | None, float | None, float | None, float | None] | None:
+    ) -> CurveSnapshot | None:
         async with self._database.session() as session:
             row = (
                 await session.execute(
-                    select(
-                        MarketSnapshot.observed_at,
-                        MarketSnapshot.virtual_sol_reserves,
-                        MarketSnapshot.virtual_token_reserves,
-                        MarketSnapshot.liquidity_sol,
-                        MarketSnapshot.price_sol,
-                    )
+                    select(*self._SNAPSHOT_COLUMNS)
                     .where(
                         MarketSnapshot.token_id == token_id,
                         MarketSnapshot.observed_at >= moment,
@@ -555,21 +625,32 @@ class PaperTradingService:
             await asyncio.sleep(self._config.pass_interval_seconds)
 
 
-def _to_curve(
-    row: Row[Any] | None,
-) -> tuple[datetime, float | None, float | None, float | None, float | None] | None:
+def _to_curve(row: Row[Any] | None) -> CurveSnapshot | None:
     if row is None:
         return None
-    observed_at, virtual_sol, virtual_tokens, liquidity, price = row
+    observed_at, virtual_sol, virtual_tokens, liquidity, price, mcap_sol, mcap_usd = row
     # Reserves are stored in base units; the curve math works in whole units.
-    return (
-        observed_at,
-        virtual_sol / 1e9 if virtual_sol else None,
-        virtual_tokens / 1e6 if virtual_tokens else None,
-        liquidity,
-        price,
+    return CurveSnapshot(
+        observed_at=observed_at,
+        virtual_sol=virtual_sol / 1e9 if virtual_sol else None,
+        virtual_tokens=virtual_tokens / 1e6 if virtual_tokens else None,
+        liquidity_sol=liquidity,
+        price_sol=price,
+        market_cap_sol=mcap_sol,
+        market_cap_usd=mcap_usd,
     )
 
 
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _implied_sol_price_usd(snapshot: CurveSnapshot) -> float | None:
+    """SOL/USD implied by the same snapshot quoting its market cap in both.
+
+    Lets a notification show "$10 of SOL" without a second price source --
+    consistent with how ``hades.tracking.derive`` computes the same quantity.
+    """
+    if not snapshot.market_cap_sol or snapshot.market_cap_usd is None:
+        return None
+    return snapshot.market_cap_usd / snapshot.market_cap_sol

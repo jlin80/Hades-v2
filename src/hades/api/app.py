@@ -20,6 +20,8 @@ from hades.config import Settings, load_settings
 from hades.db.engine import Database
 from hades.discovery.runtime import DiscoveryRuntime, build_service
 from hades.logging import configure_logging
+from hades.monitoring.heartbeat import HeartbeatRuntime, build_heartbeat_service
+from hades.paper.runtime import PaperRuntime, build_paper_service
 from hades.signals.runtime import SignalRuntime, build_signal_service
 from hades.tracking.runtime import TrackingRuntime, build_tracking_service
 
@@ -92,11 +94,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.signals = signals
         await signals.start()
 
+        paper_service = (
+            build_paper_service(database, resolved)
+            if resolved.paper_trading_enabled and health.connected
+            else None
+        )
+        if resolved.paper_trading_enabled and not health.connected:
+            logger.error("paper_trading_not_started_database_unreachable")
+        paper = PaperRuntime(paper_service)
+        app.state.paper = paper
+        await paper.start()
+
+        # Independent of every feature above: reports whatever is currently
+        # true, even if paper trading itself is disabled.
+        heartbeat_service = (
+            build_heartbeat_service(database, resolved, paper_service) if health.connected else None
+        )
+        heartbeat = HeartbeatRuntime(heartbeat_service)
+        app.state.heartbeat = heartbeat
+        await heartbeat.start()
+
         # A dead database is logged, not fatal: the process must stay up so
         # /health can *report* the outage. A crash loop reports nothing.
         try:
             yield
         finally:
+            await heartbeat.stop()
+            await paper.stop()
             await signals.stop()
             await tracking.stop()
             await discovery.stop()

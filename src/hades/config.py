@@ -132,10 +132,50 @@ class Settings(BaseSettings):
     signal_min_observations: float = Field(default=3.0, ge=2)
     signal_max_freshness_seconds: float = Field(default=30.0, gt=0)
 
+    # --- Risk engine (Phase 6, spec §13) --------------------------------------
+    # All configurable, none validated by evidence yet -- see RiskLimits.
+    risk_max_token_age_seconds: float = Field(default=300.0, gt=0)
+    risk_min_liquidity_sol: float = Field(default=1.0, ge=0)
+    risk_max_slippage_fraction: float = Field(default=0.05, gt=0, le=1)
+    risk_max_position_sol: float = Field(default=0.05, gt=0)
+    risk_max_open_positions: int = Field(default=5, ge=1)
+    # Not in §13. Required by measurement: Phase 5's live run produced four
+    # signals on the same token inside a minute, correct for research and
+    # ruinous for position sizing.
+    risk_max_open_per_token: int = Field(default=1, ge=1)
+    risk_max_daily_loss_sol: float = Field(default=0.5, gt=0)
+    risk_max_drawdown_fraction: float = Field(default=0.25, gt=0, le=1)
+    risk_max_data_age_seconds: float = Field(default=30.0, gt=0)
+
+    # --- Exit rules (Phase 6, spec §14) ---------------------------------------
+    exit_take_profit_fraction: float = Field(default=0.30, gt=0)
+    exit_stop_loss_fraction: float = Field(default=0.20, gt=0)
+    exit_trailing_stop_fraction: float = Field(default=0.15, gt=0)
+    exit_trailing_arm_fraction: float = Field(default=0.15, gt=0)
+    exit_max_hold_seconds: float = Field(default=600.0, gt=0)
+
+    # --- Paper trading (Phase 6) -----------------------------------------------
+    # Simulated fills only. No signer, no wallet, no RPC exists anywhere in this
+    # codebase -- see docs/SAFETY.md and the AST scan in tests/test_safety.py.
+    paper_trading_enabled: bool = False
+    paper_starting_balance_sol: float = Field(default=1.0, gt=0)
+    paper_position_size_sol: float = Field(default=0.02, gt=0)
+    paper_fee_rate: float = Field(default=0.01, ge=0, lt=1)
+    # Modelled delay between a decision and the order reaching the chain
+    # (spec §14). The fill uses the first snapshot at or after this, never the
+    # decision's own snapshot -- that would hand the simulator a price nobody
+    # could have traded at.
+    paper_latency_seconds: float = Field(default=2.0, ge=0)
+    paper_pass_interval_seconds: float = Field(default=3.0, gt=0)
+    paper_batch_size: int = Field(default=25, ge=1, le=200)
+
     # Optional. None means no notifier is built at all -- a missing webhook is
     # not a degraded feature, it is simply absent, matching how every other
     # optional integration in this codebase behaves.
     discord_webhook_url: str | None = Field(default=None, repr=False)
+    # 0 disables the heartbeat even if a webhook is configured -- trade
+    # notifications and the heartbeat are independent features.
+    discord_status_interval_seconds: float = Field(default=3600.0, ge=0)
 
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)

@@ -148,6 +148,28 @@ class SignalStatus(BaseModel):
     )
 
 
+class PaperStatus(BaseModel):
+    """Paper-trading state. Simulated fills only -- see disclaimer."""
+
+    enabled: bool
+    running: bool
+    last_error: str | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+
+    balance_sol: float | None = None
+    equity_sol: float | None = None
+    open_positions: int | None = None
+    trades_total: int | None = None
+
+    disclaimer: str = Field(
+        default=(
+            "Paper trading only. No signer, no wallet, no RPC -- fills are "
+            "simulated against recorded market data, never a real order."
+        ),
+        description="Present so a balance is never read as real money.",
+    )
+
+
 class StatusResponse(BaseModel):
     """Measured system state.
 
@@ -175,6 +197,7 @@ class StatusResponse(BaseModel):
     discovery: DiscoveryStatus
     tracking: TrackingStatus
     signals: SignalStatus
+    paper: PaperStatus
 
     not_implemented: list[str] = Field(
         default_factory=list,
