@@ -170,6 +170,22 @@ class PaperStatus(BaseModel):
     )
 
 
+class OutcomeStatus(BaseModel):
+    """Outcome-labelling state (spec §15-16)."""
+
+    enabled: bool
+    running: bool
+    last_error: str | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+
+    outcomes_total: int | None = None
+    outcomes_final: int | None = None
+    observations_pending: int | None = Field(
+        default=None,
+        description="Observations with no final label yet -- what the next pass still owes.",
+    )
+
+
 class StatusResponse(BaseModel):
     """Measured system state.
 
@@ -198,6 +214,7 @@ class StatusResponse(BaseModel):
     tracking: TrackingStatus
     signals: SignalStatus
     paper: PaperStatus
+    outcomes: OutcomeStatus
 
     not_implemented: list[str] = Field(
         default_factory=list,

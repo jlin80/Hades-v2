@@ -169,6 +169,13 @@ class Settings(BaseSettings):
     paper_pass_interval_seconds: float = Field(default=3.0, gt=0)
     paper_batch_size: int = Field(default=25, ge=1, le=200)
 
+    # --- Outcome engine (Phase 7, spec §15-16) --------------------------------
+    # Off by default, same reasoning as every other writer: starting the API
+    # must never start writing to the database as a side effect.
+    outcomes_enabled: bool = False
+    outcomes_batch_size: int = Field(default=200, ge=1, le=5000)
+    outcomes_pass_interval_seconds: float = Field(default=30.0, gt=0)
+
     # Optional. None means no notifier is built at all -- a missing webhook is
     # not a degraded feature, it is simply absent, matching how every other
     # optional integration in this codebase behaves.

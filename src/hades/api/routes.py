@@ -17,6 +17,7 @@ from hades.api.schemas import (
     DatabaseStatus,
     DiscoveryStatus,
     HealthResponse,
+    OutcomeStatus,
     PaperStatus,
     SignalStatus,
     StatusResponse,
@@ -28,6 +29,7 @@ from hades.db.models import TokenState
 from hades.discovery.repository import TokenRepository
 from hades.discovery.runtime import DiscoveryRuntime
 from hades.features.engine import FEATURE_VERSION
+from hades.outcomes.runtime import OutcomeRuntime
 from hades.paper.runtime import PaperRuntime
 from hades.signals.repository import SignalRepository
 from hades.signals.runtime import SignalRuntime
@@ -71,6 +73,11 @@ def get_paper(request: Request) -> PaperRuntime:
     return runtime
 
 
+def get_outcomes(request: Request) -> OutcomeRuntime:
+    runtime: OutcomeRuntime = request.app.state.outcomes
+    return runtime
+
+
 def _to_schema(health: DatabaseHealth) -> DatabaseStatus:
     return DatabaseStatus(
         connected=health.connected,
@@ -102,6 +109,7 @@ async def status(
     tracking: Annotated[TrackingRuntime, Depends(get_tracking)],
     signals: Annotated[SignalRuntime, Depends(get_signals)],
     paper: Annotated[PaperRuntime, Depends(get_paper)],
+    outcomes: Annotated[OutcomeRuntime, Depends(get_outcomes)],
 ) -> StatusResponse:
     db_health = await database.check_health()
 
@@ -141,6 +149,13 @@ async def status(
         running=paper.is_running,
         last_error=paper.last_error,
         counters=paper.counters,
+    )
+
+    outcome_status = OutcomeStatus(
+        enabled=settings.outcomes_enabled,
+        running=outcomes.is_running,
+        last_error=outcomes.last_error,
+        counters=outcomes.counters,
     )
 
     tokens_discovered: int | None = None
@@ -203,6 +218,16 @@ async def status(
                 }
             )
 
+        if outcomes.service is not None:
+            outcome_stats = await outcomes.service.stats()
+            outcome_status = outcome_status.model_copy(
+                update={
+                    "outcomes_total": outcome_stats["outcomes_total"],
+                    "outcomes_final": outcome_stats["outcomes_final"],
+                    "observations_pending": outcome_stats["observations_pending"],
+                }
+            )
+
     started_at: float = request.app.state.started_at
     return StatusResponse(
         status="healthy" if db_health.connected else "degraded",
@@ -217,5 +242,6 @@ async def status(
         tracking=tracking_status,
         signals=signal_status,
         paper=paper_status,
+        outcomes=outcome_status,
         not_implemented=list(NOT_IMPLEMENTED_METRICS),
     )
