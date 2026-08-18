@@ -120,7 +120,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Independent of every feature above: reports whatever is currently
         # true, even if paper trading itself is disabled.
         heartbeat_service = (
-            build_heartbeat_service(database, resolved, paper_service) if health.connected else None
+            build_heartbeat_service(database, resolved, paper_service, outcome_service)
+            if health.connected
+            else None
         )
         heartbeat = HeartbeatRuntime(heartbeat_service)
         app.state.heartbeat = heartbeat

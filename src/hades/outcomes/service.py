@@ -296,6 +296,24 @@ class OutcomeService:
             "observations_pending": unlabelled,
         }
 
+    async def signalled_final_count(self) -> int:
+        """Observations that both fired a signal and have a final outcome.
+
+        The number that answers "is there enough evidence yet" -- a finalised
+        outcome on an observation nobody signalled says nothing about the
+        hypothesis, and a signal with no final outcome yet is still pending.
+        """
+        async with self._database.session() as session:
+            signalled = select(SignalRow.observation_id)
+            return (
+                await session.scalar(
+                    select(func.count(func.distinct(ObservationOutcome.observation_id)))
+                    .where(ObservationOutcome.is_final.is_(True))
+                    .where(ObservationOutcome.observation_id.in_(signalled))
+                )
+                or 0
+            )
+
     async def run(self) -> None:
         while True:
             self.counters.passes += 1

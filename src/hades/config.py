@@ -183,6 +183,12 @@ class Settings(BaseSettings):
     # 0 disables the heartbeat even if a webhook is configured -- trade
     # notifications and the heartbeat are independent features.
     discord_status_interval_seconds: float = Field(default=3600.0, ge=0)
+    # Finalised, signalled outcomes needed before the one-off @everyone ping
+    # that says "enough evidence exists to run scripts/research_report.py".
+    # Checked on the same clock as the heartbeat, so it fires at most once per
+    # discord_status_interval_seconds, and never more than once per process
+    # lifetime once it has fired.
+    research_ready_threshold: int = Field(default=100, ge=1)
 
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)

@@ -58,6 +58,7 @@ async def test_reports_zeroed_stats_on_an_empty_database(session: AsyncSession) 
         notifier_with(handler),
         settings=Settings(),
         paper_service=None,
+        outcome_service=None,
         interval_seconds=3600.0,
     )
     await service._report_once()
@@ -77,6 +78,7 @@ async def test_a_report_failure_does_not_raise(session: AsyncSession) -> None:
         notifier_with(handler),
         settings=Settings(),
         paper_service=None,
+        outcome_service=None,
         interval_seconds=3600.0,
     )
     await service._report_once()  # must not raise
@@ -88,7 +90,7 @@ def test_a_missing_webhook_builds_no_service() -> None:
     class DummyDatabase:
         pass
 
-    assert build_heartbeat_service(DummyDatabase(), settings, None) is None  # type: ignore[arg-type]
+    assert build_heartbeat_service(DummyDatabase(), settings, None, None) is None  # type: ignore[arg-type]
 
 
 def test_a_zero_interval_disables_the_heartbeat() -> None:
@@ -100,4 +102,87 @@ def test_a_zero_interval_disables_the_heartbeat() -> None:
     class DummyDatabase:
         pass
 
-    assert build_heartbeat_service(DummyDatabase(), settings, None) is None  # type: ignore[arg-type]
+    assert build_heartbeat_service(DummyDatabase(), settings, None, None) is None  # type: ignore[arg-type]
+
+
+class TestResearchReadyPing:
+    """The one notification worth an @everyone -- fires once, when it should."""
+
+    async def test_pings_everyone_once_the_threshold_is_reached(
+        self, session: AsyncSession
+    ) -> None:
+        captured: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(json.loads(request.content))
+            return httpx.Response(204)
+
+        class StubOutcomeService:
+            async def signalled_final_count(self) -> int:
+                return 150
+
+        service = HeartbeatService(
+            FakeDatabase(session),  # type: ignore[arg-type]
+            notifier_with(handler),
+            settings=Settings(research_ready_threshold=100),
+            paper_service=None,
+            outcome_service=StubOutcomeService(),  # type: ignore[arg-type]
+            interval_seconds=3600.0,
+        )
+        await service._report_once()
+
+        assert len(captured) == 2  # the regular status post, then the ping
+        ping = captured[1]
+        assert ping["content"] == "@everyone"
+        assert ping["allowed_mentions"] == {"parse": ["everyone"]}
+        embed = ping["embeds"][0]  # type: ignore[index]
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["Señales con outcome final"] == "150"
+
+    async def test_does_not_ping_below_the_threshold(self, session: AsyncSession) -> None:
+        captured: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(json.loads(request.content))
+            return httpx.Response(204)
+
+        class StubOutcomeService:
+            async def signalled_final_count(self) -> int:
+                return 40
+
+        service = HeartbeatService(
+            FakeDatabase(session),  # type: ignore[arg-type]
+            notifier_with(handler),
+            settings=Settings(research_ready_threshold=100),
+            paper_service=None,
+            outcome_service=StubOutcomeService(),  # type: ignore[arg-type]
+            interval_seconds=3600.0,
+        )
+        await service._report_once()
+
+        assert len(captured) == 1  # only the regular status post
+
+    async def test_pings_only_once_across_repeated_passes(self, session: AsyncSession) -> None:
+        captured: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(json.loads(request.content))
+            return httpx.Response(204)
+
+        class StubOutcomeService:
+            async def signalled_final_count(self) -> int:
+                return 150
+
+        service = HeartbeatService(
+            FakeDatabase(session),  # type: ignore[arg-type]
+            notifier_with(handler),
+            settings=Settings(research_ready_threshold=100),
+            paper_service=None,
+            outcome_service=StubOutcomeService(),  # type: ignore[arg-type]
+            interval_seconds=3600.0,
+        )
+        await service._report_once()
+        await service._report_once()
+
+        pings = [body for body in captured if body.get("content") == "@everyone"]
+        assert len(pings) == 1

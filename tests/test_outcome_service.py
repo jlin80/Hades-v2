@@ -250,3 +250,30 @@ async def test_stats_report_what_is_still_pending(session: AsyncSession) -> None
     stats = await engine.stats()
     assert stats["outcomes_final"] == 1
     assert stats["observations_pending"] == 0
+
+
+class TestSignalledFinalCount:
+    """The number that gates the "enough data to run the report" ping."""
+
+    async def test_only_signalled_and_final_rows_are_counted(self, session: AsyncSession) -> None:
+        # A move too small to hit either barrier -- stays UNRESOLVED until the
+        # time barrier elapses, so the row is still provisional at the first check.
+        await seed(session, prices=[(0.0, 1.0), (60.0, 1.05)], with_signal=True)
+        engine = service(session)
+
+        # Provisional -- not counted yet.
+        await engine.label_pending(now=T0 + timedelta(seconds=120))
+        assert await engine.signalled_final_count() == 0
+
+        # Final now -- counted.
+        await engine.label_pending(now=T0 + timedelta(hours=2))
+        assert await engine.signalled_final_count() == 1
+
+    async def test_a_final_outcome_without_a_signal_is_not_counted(
+        self, session: AsyncSession
+    ) -> None:
+        await seed(session, prices=[(0.0, 1.0), (60.0, 1.4)], with_signal=False)
+        engine = service(session)
+        await engine.label_pending(now=T0 + timedelta(hours=2))
+
+        assert await engine.signalled_final_count() == 0

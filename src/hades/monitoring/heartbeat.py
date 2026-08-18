@@ -17,6 +17,7 @@ import httpx
 from hades.config import Settings
 from hades.db.engine import Database
 from hades.discovery.repository import TokenRepository
+from hades.outcomes.service import OutcomeService
 from hades.paper.service import PaperTradingService
 from hades.signals.notify import DISCLAIMER
 from hades.signals.repository import SignalRepository
@@ -26,6 +27,7 @@ from hades.tracking.runtime import schedule_from_settings
 logger = logging.getLogger(__name__)
 
 _COLOR_STATUS = 0x5865F2
+_COLOR_RESEARCH_READY = 0xFEE75C
 
 
 class DiscordHeartbeat:
@@ -64,16 +66,53 @@ class DiscordHeartbeat:
         ]
         await self._post(
             {
-                "title": "🩺 Hades V2 status",
-                "color": _COLOR_STATUS,
-                "fields": fields,
-                "footer": {"text": DISCLAIMER},
+                "embeds": [
+                    {
+                        "title": "🩺 Hades V2 status",
+                        "color": _COLOR_STATUS,
+                        "fields": fields,
+                        "footer": {"text": DISCLAIMER},
+                    }
+                ]
             }
         )
 
-    async def _post(self, embed: dict[str, object]) -> None:
+    async def send_research_ready(self, *, signalled_final_count: int, threshold: int) -> None:
+        """One-off ping: enough finalised, signalled outcomes to run the report.
+
+        @everyone because this is the one event in the whole system worth
+        interrupting someone for -- every other notification here is
+        best-effort and easy to miss on purpose.
+        """
+        embed = {
+            "title": "🔬 Suficientes datos para evaluar EARLY MOMENTUM",
+            "color": _COLOR_RESEARCH_READY,
+            "fields": [
+                {
+                    "name": "Señales con outcome final",
+                    "value": str(signalled_final_count),
+                    "inline": True,
+                },
+                {"name": "Umbral configurado", "value": str(threshold), "inline": True},
+                {
+                    "name": "Próximo paso",
+                    "value": "`python scripts/research_report.py <database> <label_config>`",
+                    "inline": False,
+                },
+            ],
+            "footer": {"text": DISCLAIMER},
+        }
+        await self._post(
+            {
+                "content": "@everyone",
+                "embeds": [embed],
+                "allowed_mentions": {"parse": ["everyone"]},
+            }
+        )
+
+    async def _post(self, payload: dict[str, object]) -> None:
         try:
-            response = await self._client.post(self._url, json={"embeds": [embed]})
+            response = await self._client.post(self._url, json=payload)
             if response.status_code >= 400:
                 logger.warning(
                     "discord_heartbeat_failed",
@@ -99,13 +138,20 @@ class HeartbeatService:
         *,
         settings: Settings,
         paper_service: PaperTradingService | None,
+        outcome_service: OutcomeService | None,
         interval_seconds: float,
     ) -> None:
         self._database = database
         self._notifier = notifier
         self._settings = settings
         self._paper_service = paper_service
+        self._outcome_service = outcome_service
         self._interval_seconds = interval_seconds
+        # In-memory, not persisted: a restart while still above threshold
+        # re-arms the check and pings once more. Preferred over a DB flag --
+        # missing the alert entirely is worse than one duplicate ping, and a
+        # restart while waiting on this is rare.
+        self._research_ready_announced = False
 
     async def _report_once(self) -> None:
         schedule = schedule_from_settings(self._settings)
@@ -136,6 +182,15 @@ class HeartbeatService:
             open_positions=open_positions,
             trades_total=trades_total,
         )
+
+        if self._outcome_service is not None and not self._research_ready_announced:
+            threshold = self._settings.research_ready_threshold
+            count = await self._outcome_service.signalled_final_count()
+            if count >= threshold:
+                await self._notifier.send_research_ready(
+                    signalled_final_count=count, threshold=threshold
+                )
+                self._research_ready_announced = True
 
     async def run(self) -> None:
         while True:
@@ -198,6 +253,7 @@ def build_heartbeat_service(
     database: Database,
     settings: Settings,
     paper_service: PaperTradingService | None,
+    outcome_service: OutcomeService | None,
 ) -> HeartbeatService | None:
     if not settings.discord_webhook_url or settings.discord_status_interval_seconds <= 0:
         return None
@@ -206,5 +262,6 @@ def build_heartbeat_service(
         DiscordHeartbeat(settings.discord_webhook_url),
         settings=settings,
         paper_service=paper_service,
+        outcome_service=outcome_service,
         interval_seconds=settings.discord_status_interval_seconds,
     )
