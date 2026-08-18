@@ -1,12 +1,16 @@
 """ORM models.
 
-Phase 0 defines exactly one table: ``tokens``. It exists now — ahead of the
-discovery code that will fill it in Phase 2 — because ``/status`` must report
-measured numbers, and a counter with no table behind it can only be a
-fabricated zero.
+Four tables, each arriving with the phase that produces it:
 
-Nothing else is modelled yet. Snapshots, features, signals and paper trades
-arrive with the phase that produces them.
+* ``tokens`` (Phase 0/2) — one row per mint we have ever seen, unique on the
+  address, which is what makes discovery idempotent across restarts.
+* ``market_snapshots`` (Phase 3) — append-only observations of curve state.
+* ``feature_observations`` (Phase 5) — the immutable feature vector at an
+  instant, which spec §11 requires and §16 uses as the research dataset.
+* ``signals`` (Phase 5) — research signals, pointing at the observation they
+  were computed from.
+
+Paper trades and outcomes arrive with Phases 6 and 7.
 """
 
 from __future__ import annotations
@@ -14,8 +18,10 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -25,13 +31,20 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     Uuid,
     func,
     text,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hades.db.base import Base
+
+# JSONB on Postgres, plain JSON on SQLite. The variant matters: §17's questions
+# slice the dataset by feature value, and JSONB is indexable where a text blob
+# is not — while the tests still need a dialect that has no JSONB at all.
+_JSONB = JSON().with_variant(postgresql.JSONB(), "postgresql")
 
 
 class TokenState(enum.StrEnum):
@@ -211,3 +224,88 @@ class MarketSnapshot(Base):
 
     # Deliberately no updated_at: a snapshot is a measurement at an instant and
     # is never modified after it is written.
+
+
+class FeatureObservation(Base):
+    """The immutable feature vector at one instant (spec §11).
+
+    Append-only, and never updated. §11 requires that the features used to make
+    a decision stay intact — so this table has no mutable column at all, not
+    even a timestamp, and nothing in the codebase issues an UPDATE against it.
+
+    ``feature_version`` is what makes an old row still readable: a vector's
+    meaning is fixed by the version that computed it, so a formula change bumps
+    the version and leaves history alone rather than silently reinterpreting it.
+
+    This is also §16's research dataset. Every row is a moment at which a signal
+    *could* have fired, which makes it the denominator for §17's questions —
+    "how many signals were there" is unanswerable without knowing how many
+    chances there were.
+    """
+
+    __tablename__ = "feature_observations"
+    __table_args__ = (
+        # One vector per token per instant. Re-evaluating the same moment must
+        # not create a second row: the dataset would silently double-weight it.
+        UniqueConstraint("token_id", "observed_at", name="uq_feature_observations_token_time"),
+        Index("ix_feature_observations_token_observed", "token_id", "observed_at"),
+        Index("ix_feature_observations_observed_at", "observed_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    token_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    # JSON rather than 41 columns: the set changes with the version, and a
+    # migration per feature would make adding one expensive enough to discourage
+    # it. Queried rarely; exported in bulk.
+    features: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    stored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SignalRow(Base):
+    """A research signal. Never an order.
+
+    Points at the observation it was computed from rather than copying the
+    vector: §11's immutability is a property of ``feature_observations``, and
+    duplicating the values here would create a second copy that could disagree
+    with the first.
+    """
+
+    __tablename__ = "signals"
+    __table_args__ = (
+        # A strategy fires at most once per observation. Without this, a replay
+        # or a restart mid-pass would double-count the same signal.
+        UniqueConstraint("observation_id", "strategy", name="uq_signals_observation_strategy"),
+        Index("ix_signals_token_created", "token_id", "created_at"),
+        Index("ix_signals_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    observation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("feature_observations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    token_address: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    # The observation's timestamp, not wall-clock now: spec §13 needs this
+    # comparable with the data it was computed from, and stamping the current
+    # time would fold our own processing delay into the signal's age.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Every clause and whether it held. §17 asks how results vary with age,
+    # liquidity and activity, which needs to know which clause was binding.
+    conditions: Mapped[list[Any]] = mapped_column(_JSONB, nullable=False)
+    stored_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

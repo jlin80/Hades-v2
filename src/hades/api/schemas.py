@@ -110,6 +110,44 @@ class TrackingStatus(BaseModel):
     )
 
 
+class SignalStatus(BaseModel):
+    """Signal research state.
+
+    ``signals_total`` alone is not a result. It is reported next to
+    ``observations_total`` because §17 asks how many signals there were, and
+    that is meaningless without how many chances there were to fire.
+    """
+
+    enabled: bool
+    running: bool
+    last_error: str | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+
+    strategy: str | None = None
+    strategy_version: str | None = None
+    feature_version: str
+
+    observations_total: int | None = None
+    observations_last_hour: int | None = None
+    signals_total: int | None = None
+    signals_last_hour: int | None = None
+    tokens_with_a_signal: int | None = None
+    signal_rate: float | None = Field(
+        default=None,
+        description="Signals per observation. The denominator is the point.",
+    )
+    last_signal_at: datetime | None = None
+
+    disclaimer: str = Field(
+        default=(
+            "Research signals only. No orders are produced, and nothing here "
+            "asserts the hypothesis is profitable -- that is unmeasured until "
+            "Phase 7 and may well be false."
+        ),
+        description="Present so a signal count is never read as a profit claim.",
+    )
+
+
 class StatusResponse(BaseModel):
     """Measured system state.
 
@@ -136,6 +174,7 @@ class StatusResponse(BaseModel):
     )
     discovery: DiscoveryStatus
     tracking: TrackingStatus
+    signals: SignalStatus
 
     not_implemented: list[str] = Field(
         default_factory=list,

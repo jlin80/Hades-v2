@@ -17,6 +17,7 @@ from hades.api.schemas import (
     DatabaseStatus,
     DiscoveryStatus,
     HealthResponse,
+    SignalStatus,
     StatusResponse,
     TrackingStatus,
 )
@@ -25,6 +26,9 @@ from hades.db.engine import Database, DatabaseHealth
 from hades.db.models import TokenState
 from hades.discovery.repository import TokenRepository
 from hades.discovery.runtime import DiscoveryRuntime
+from hades.features.engine import FEATURE_VERSION
+from hades.signals.repository import SignalRepository
+from hades.signals.runtime import SignalRuntime
 from hades.tracking.repository import TrackingRepository
 from hades.tracking.runtime import TrackingRuntime, schedule_from_settings
 
@@ -32,10 +36,7 @@ router = APIRouter(tags=["observability"])
 
 # Counters whose producing phase does not exist yet. Named explicitly so the
 # payload states its own incompleteness instead of implying zeros.
-NOT_IMPLEMENTED_METRICS = (
-    "signals_total",
-    "paper_trades",
-)
+NOT_IMPLEMENTED_METRICS = ("paper_trades",)
 
 
 def get_database(request: Request) -> Database:
@@ -55,6 +56,11 @@ def get_discovery(request: Request) -> DiscoveryRuntime:
 
 def get_tracking(request: Request) -> TrackingRuntime:
     runtime: TrackingRuntime = request.app.state.tracking
+    return runtime
+
+
+def get_signals(request: Request) -> SignalRuntime:
+    runtime: SignalRuntime = request.app.state.signals
     return runtime
 
 
@@ -87,6 +93,7 @@ async def status(
     settings: Annotated[Settings, Depends(get_settings)],
     discovery: Annotated[DiscoveryRuntime, Depends(get_discovery)],
     tracking: Annotated[TrackingRuntime, Depends(get_tracking)],
+    signals: Annotated[SignalRuntime, Depends(get_signals)],
 ) -> StatusResponse:
     db_health = await database.check_health()
 
@@ -109,6 +116,16 @@ async def status(
         estimated_requests_per_second=round(
             schedule.estimated_requests_per_second(settings.tracking_max_concurrent), 3
         ),
+    )
+
+    signal_status = SignalStatus(
+        enabled=settings.signals_enabled,
+        running=signals.is_running,
+        last_error=signals.last_error,
+        counters=signals.counters,
+        strategy=signals.strategy,
+        strategy_version=signals.strategy_version,
+        feature_version=FEATURE_VERSION,
     )
 
     tokens_discovered: int | None = None
@@ -147,17 +164,31 @@ async def status(
                 }
             )
 
+            signal_stats = await SignalRepository(session).stats()
+            signal_status = signal_status.model_copy(
+                update={
+                    "observations_total": signal_stats.observations_total,
+                    "observations_last_hour": signal_stats.observations_last_hour,
+                    "signals_total": signal_stats.signals_total,
+                    "signals_last_hour": signal_stats.signals_last_hour,
+                    "tokens_with_a_signal": signal_stats.tokens_with_a_signal,
+                    "signal_rate": signal_stats.signal_rate,
+                    "last_signal_at": signal_stats.last_signal_at,
+                }
+            )
+
     started_at: float = request.app.state.started_at
     return StatusResponse(
         status="healthy" if db_health.connected else "degraded",
         version=__version__,
         environment=settings.environment,
-        phase=3,
+        phase=5,
         uptime_seconds=round(time.monotonic() - started_at, 3),
         database=_to_schema(db_health),
         tokens_discovered=tokens_discovered,
         tokens_tracking=tokens_tracking,
         discovery=discovery_status,
         tracking=tracking_status,
+        signals=signal_status,
         not_implemented=list(NOT_IMPLEMENTED_METRICS),
     )

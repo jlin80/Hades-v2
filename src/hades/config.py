@@ -103,6 +103,35 @@ class Settings(BaseSettings):
     # §15 currently asks for.
     tracking_retire_after_seconds: float = Field(default=3600.0, gt=0)
 
+    # --- Signal research (Phase 5) -------------------------------------------
+    # Research signals only. Nothing downstream of this executes anything, and
+    # nothing here asserts the hypothesis is profitable.
+    signals_enabled: bool = False
+    signal_batch_size: int = Field(default=25, ge=1, le=200)
+    signal_pass_interval_seconds: float = Field(default=5.0, gt=0)
+    signal_series_lookback_seconds: float = Field(default=300.0, gt=0)
+    # 0 means store a vector for every new snapshot, which is the research
+    # ideal. At 40 tracked tokens that is roughly 100k rows/day at ~1 KB each --
+    # ~100 MB/day, enough to fill a homelab rootfs in months. Raise it to thin
+    # the dataset deliberately rather than discovering the limit as an outage.
+    signal_observation_min_interval_seconds: float = Field(default=0.0, ge=0)
+
+    # EARLY MOMENTUM thresholds (spec §12). Every one of these is a plausible
+    # starting point, NOT a value derived from evidence -- there is no evidence
+    # yet, and producing it is what Phase 7 is for. The hypothesis may well have
+    # no edge.
+    signal_window: str = "30s"
+    signal_min_token_age_seconds: float = Field(default=30.0, ge=0)
+    signal_max_token_age_seconds: float = Field(default=300.0, gt=0)
+    signal_min_market_cap_velocity: float = 0.05
+    signal_min_market_cap_acceleration: float = 0.0
+    signal_min_liquidity_velocity: float = 0.0
+    signal_min_price_movement_ratio: float = Field(default=0.5, ge=0, le=1)
+    signal_max_seconds_since_last_trade: float = Field(default=30.0, gt=0)
+    signal_min_liquidity_sol: float = Field(default=1.0, ge=0)
+    signal_min_observations: float = Field(default=3.0, ge=2)
+    signal_max_freshness_seconds: float = Field(default=30.0, gt=0)
+
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)
     provider_max_connections: int = Field(default=10, ge=1, le=100)
@@ -137,6 +166,22 @@ class Settings(BaseSettings):
                 f"medium={self.medium_tracking_seconds} < "
                 f"normal={self.normal_tracking_seconds}"
             )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _signal_window_must_exist(self) -> Settings:
+        """The window suffix must name one the feature engine actually computes.
+
+        A typo here would make every windowed condition read a missing feature
+        and fail forever — and the hypothesis would look like one that never
+        triggers rather than like a configuration error.
+        """
+        from hades.features.engine import FeatureWindows
+
+        available = {f"{int(s)}s" if s == int(s) else f"{s}s" for s in FeatureWindows().seconds}
+        if self.signal_window not in available:
+            msg = f"signal_window {self.signal_window!r} is not computed; available: {available}"
             raise ValueError(msg)
         return self
 

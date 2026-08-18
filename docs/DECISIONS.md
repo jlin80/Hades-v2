@@ -253,6 +253,48 @@ And every rate divides by **observed** elapsed time, never the configured interv
 measured those at ~12.2s versus 10s — a consistent 20% error in a direction nobody would
 notice.
 
+### D16 — One strategy, one conjunction, every clause recorded
+
+**Decision:** a single strategy behind the one-method interface §12 specifies, firing only
+when all nine clauses hold, recording each clause pass or fail.
+
+Hades V1 shipped fifteen strategies behind a seven-method interface, combined by a weighted
+ensemble whose DynamicWeightEngine mixed regime, Sharpe, profit factor, drawdown,
+consistency, sample size, AI and research into one number — before any single component had
+been shown to have an edge. Weights need evidence. There is none.
+
+Conjunction is the honest form for an untested hypothesis: interpretable, and every clause
+visible. Recording rejections is what makes §17 answerable — "how results change with token
+age, liquidity and activity" needs to know which clause was binding, so `check()`
+deliberately does not short-circuit.
+
+**A missing feature fails its clause.** Unknown is not permission: a None input means the
+hypothesis could not be evaluated, and firing on that would be firing blind. That case is
+common precisely when the vector is thinnest, early in a token's life.
+
+An unknown feature *name* raises instead. A typo returning None would make its clause fail
+forever, and the strategy would look like a hypothesis that never triggers rather than like
+a bug.
+
+### D17 — Every evaluation is stored; only some are signals
+
+**Decision:** each evaluation writes an immutable `feature_observations` row. A signal is a
+separate row pointing at it.
+
+§17 asks how many signals there were. That is meaningless without how many chances there
+were to fire, so the observation table is the denominator — and it is also §16's research
+dataset, since every row is a token, a T0 vector, and (once Phase 7 lands) a future outcome.
+
+Immutability is structural, per §11: no mutable column at all, not even `updated_at`, and a
+conflict resolves `DO NOTHING` rather than `DO UPDATE`. `record_observation` returns None on
+conflict rather than the existing id, so a caller cannot emit a second signal for a moment
+already evaluated — a duplicate would silently double that moment's weight in every
+statistic computed later, which is worse than a wasted row.
+
+The cost is storage: ~100k rows/day at ~1 KB is ~100 MB/day, months to fill a homelab
+rootfs. `signal_observation_min_interval_seconds` thins it, defaulting to 0 (store
+everything) so that running out of disk is a decision rather than an outage.
+
 ### D12 — The backfill retry budget is a column, not a counter
 
 **Decision:** `tokens.backfill_attempts` is persisted and incremented in the database;

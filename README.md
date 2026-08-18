@@ -12,8 +12,8 @@ mistakes and reusable decisions — not a codebase to port. See `docs/DECISIONS.
 
 ## Status
 
-**Phases 0–4 complete.** Phases advance only when the current one passes its gate;
-nothing beyond Phase 4 is built.
+**Phases 0–5 complete.** Phases advance only when the current one passes its gate;
+nothing beyond Phase 5 is built.
 
 Discovery and tracking are both **off by default** (`HADES_DISCOVERY_ENABLED`,
 `HADES_TRACKING_ENABLED`): starting the API must never begin writing to the database as a
@@ -26,8 +26,8 @@ side effect.
 | 2 | Token discovery — discover, validate, persist, deduplicate, recover | ✅ |
 | 3 | Adaptive snapshot tracking, persistence, validation, stale detection | ✅ |
 | 4 | Feature engine — [`docs/FEATURES.md`](docs/FEATURES.md) | ✅ |
-| 5 | Signal research (one hypothesis) | ⬜ next |
-| 6 | Paper trading | ⬜ |
+| 5 | Signal research — one hypothesis → [`docs/SIGNALS.md`](docs/SIGNALS.md) | ✅ |
+| 6 | Paper trading | ⬜ next |
 | 7 | Outcome + analytics | ⬜ |
 
 ## Run it
@@ -123,6 +123,25 @@ means for Phase 5's hypothesis.
 .venv/Scripts/python scripts/run_features_demo.py 120
 ```
 
+## Signals
+
+One hypothesis — EARLY MOMENTUM — evaluated over tracked tokens, producing **research
+signals and never an order**. Nothing here claims it works; every threshold is a plausible
+starting point, not a value derived from evidence.
+
+Every evaluation writes an immutable feature vector (spec §11), and only some produce a
+signal. That asymmetry is the point: a signal count means nothing without the number of
+chances there were to fire.
+
+Measured over 200 seconds live: **211 observations, 5 signals (2.4%)**, and the per-clause
+breakdown says something the system did not know before — 85% of observations were of
+tokens holding under 1 SOL, and 72% were of tokens whose curve had not moved. Most Pump.fun
+tokens are dead on arrival. See [`docs/SIGNALS.md`](docs/SIGNALS.md).
+
+```bash
+.venv/Scripts/python scripts/run_signals_smoke.py 200
+```
+
 ## Safety
 
 No private keys, no signer, no transaction submission — enforced by an AST scan in
@@ -140,9 +159,11 @@ src/hades/
   discovery/      Phase 2 — idempotent token discovery
   tracking/       Phase 3 — adaptive snapshots, curve derivations
   features/       Phase 4 — pure feature functions
+  signals/        Phase 5 — the one hypothesis, immutable observations
   api/            FastAPI app, /health, /status
 migrations/       Alembic
 scripts/          probes and smoke runs against live sources (reproducible evidence)
-docs/             DATA_SOURCES.md, FEATURES.md, DECISIONS.md, SAFETY.md, DEPLOYMENT.md
+docs/             DATA_SOURCES.md, FEATURES.md, SIGNALS.md, DECISIONS.md, SAFETY.md,
+                  DEPLOYMENT.md
 tests/
 ```

@@ -106,7 +106,35 @@ def execute(dsn: str, statement: str, params: dict[str, Any] | None = None) -> N
 def test_upgrade_to_head_creates_the_expected_schema(migration_dsn: str) -> None:
     command.upgrade(alembic_config(), "head")
 
-    assert {"tokens", "market_snapshots"} <= table_names(migration_dsn)
+    assert {
+        "tokens",
+        "market_snapshots",
+        "feature_observations",
+        "signals",
+    } <= table_names(migration_dsn)
+
+    # Spec §11's immutable record. Note what is absent: no updated_at, and no
+    # code path anywhere issues an UPDATE against it.
+    assert table_columns(migration_dsn, "feature_observations") == {
+        "id",
+        "token_id",
+        "token_address",
+        "observed_at",
+        "feature_version",
+        "features",
+        "stored_at",
+    }
+    assert table_columns(migration_dsn, "signals") == {
+        "id",
+        "observation_id",
+        "token_id",
+        "token_address",
+        "strategy",
+        "strategy_version",
+        "created_at",
+        "conditions",
+        "stored_at",
+    }
 
     # Every column §7 of the spec requires of a discovered token, plus the
     # on-chain reference (0002), the retry budget (0003) and tracking (0004).
@@ -209,8 +237,7 @@ def test_downgrade_then_upgrade_round_trips(migration_dsn: str) -> None:
 
     command.downgrade(config, "base")
     names = table_names(migration_dsn)
-    assert "tokens" not in names
-    assert "market_snapshots" not in names
+    assert not names & {"tokens", "market_snapshots", "feature_observations", "signals"}
 
     command.upgrade(config, "head")
     assert "raw_provider_reference" in table_columns(migration_dsn, "tokens")

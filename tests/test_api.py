@@ -49,8 +49,23 @@ def test_status_returns_null_counters_not_zero_when_database_is_down(
 
 def test_status_declares_which_metrics_do_not_exist_yet(client: TestClient) -> None:
     body = client.get("/status").json()
-    assert body["phase"] == 3
+    assert body["phase"] == 5
     assert set(body["not_implemented"]) == set(NOT_IMPLEMENTED_METRICS)
+
+
+def test_signal_counts_are_reported_next_to_their_denominator(client: TestClient) -> None:
+    """A signal count alone is not a result.
+
+    §17 asks how many signals there were, which is meaningless without how many
+    chances there were to fire — so observations_total travels with it, and the
+    payload carries a disclaimer so a count is never read as a profit claim.
+    """
+    signals = client.get("/status").json()["signals"]
+    assert signals["enabled"] is False
+    assert signals["running"] is False
+    assert "observations_total" in signals
+    assert "signal_rate" in signals
+    assert "no orders" in signals["disclaimer"].lower()
 
 
 def test_tracking_publishes_its_own_capacity_arithmetic(client: TestClient) -> None:
