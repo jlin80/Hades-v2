@@ -111,6 +111,8 @@ def test_upgrade_to_head_creates_the_expected_schema(migration_dsn: str) -> None
         "market_snapshots",
         "feature_observations",
         "signals",
+        "risk_decisions",
+        "paper_trades",
     } <= table_names(migration_dsn)
 
     # Spec §11's immutable record. Note what is absent: no updated_at, and no
@@ -237,7 +239,14 @@ def test_downgrade_then_upgrade_round_trips(migration_dsn: str) -> None:
 
     command.downgrade(config, "base")
     names = table_names(migration_dsn)
-    assert not names & {"tokens", "market_snapshots", "feature_observations", "signals"}
+    assert not names & {
+        "tokens",
+        "market_snapshots",
+        "feature_observations",
+        "signals",
+        "risk_decisions",
+        "paper_trades",
+    }
 
     command.upgrade(config, "head")
     assert "raw_provider_reference" in table_columns(migration_dsn, "tokens")

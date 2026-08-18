@@ -309,3 +309,127 @@ class SignalRow(Base):
     stored_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class TradeState(enum.StrEnum):
+    """Where a paper trade is in its life.
+
+    PENDING exists because spec §14 asks for latency to be modelled: an order
+    decided at T is not filled at T, it is filled against whatever the curve
+    looks like once it arrives.
+    """
+
+    PENDING = "PENDING"
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+
+
+class ExitReason(enum.StrEnum):
+    """Spec §14's exit reasons, exactly."""
+
+    TAKE_PROFIT = "TAKE_PROFIT"
+    STOP_LOSS = "STOP_LOSS"
+    TRAILING_STOP = "TRAILING_STOP"
+    TIMEOUT = "TIMEOUT"
+    RISK_EXIT = "RISK_EXIT"
+    MANUAL = "MANUAL"
+
+
+class RiskDecisionRow(Base):
+    """Every risk verdict, approved or not (spec §13).
+
+    Rejections are persisted rather than logged: §17 asks how results vary with
+    token age, liquidity and activity, and a rejected signal is a data point
+    about the strategy's *reach* that a log line cannot be joined against.
+    """
+
+    __tablename__ = "risk_decisions"
+    __table_args__ = (
+        # One verdict per signal. A retry after a restart must not create a
+        # second decision that could disagree with the first.
+        UniqueConstraint("signal_id", name="uq_risk_decisions_signal"),
+        Index("ix_risk_decisions_decided", "decision_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("signals.id", ondelete="CASCADE"), nullable=False
+    )
+    token_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # All three required by §13 on every signal.
+    signal_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decision_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    data_age_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    position_size_sol: Mapped[float] = mapped_column(Float, nullable=False)
+    checks: Mapped[list[Any]] = mapped_column(_JSONB, nullable=False)
+
+
+class PaperTrade(Base):
+    """A simulated trade. Spec §14's field list, and nothing that could execute.
+
+    Fees and slippage are stored separately from PnL rather than folded in, so
+    a result can be read as "the edge before friction" and "what friction took"
+    — which is the whole question §17 exists to answer.
+    """
+
+    __tablename__ = "paper_trades"
+    __table_args__ = (
+        # A signal produces at most one trade, whatever restarts happen.
+        UniqueConstraint("signal_id", name="uq_paper_trades_signal"),
+        Index("ix_paper_trades_state", "state"),
+        Index("ix_paper_trades_token_entry", "token_id", "entry_time"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("signals.id", ondelete="CASCADE"), nullable=False
+    )
+    token_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    token_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    state: Mapped[TradeState] = mapped_column(
+        Enum(TradeState, name="trade_state", native_enum=True, validate_strings=True),
+        nullable=False,
+        default=TradeState.PENDING,
+    )
+    decision_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # decision_at + modelled latency. The order fills against the first snapshot
+    # at or after this, not against the one the decision was made on.
+    submit_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    entry_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entry_price: Mapped[float | None] = mapped_column(Float)
+    position_size_sol: Mapped[float] = mapped_column(Float, nullable=False)
+    entry_tokens: Mapped[float | None] = mapped_column(Float)
+    entry_fee_sol: Mapped[float | None] = mapped_column(Float)
+    entry_slippage: Mapped[float | None] = mapped_column(Float)
+
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_price: Mapped[float | None] = mapped_column(Float)
+    exit_sol: Mapped[float | None] = mapped_column(Float)
+    exit_fee_sol: Mapped[float | None] = mapped_column(Float)
+    exit_slippage: Mapped[float | None] = mapped_column(Float)
+    exit_reason: Mapped[ExitReason | None] = mapped_column(
+        Enum(ExitReason, name="exit_reason", native_enum=True, validate_strings=True)
+    )
+
+    # Highest price seen while open, for the trailing stop. Persisted so a
+    # restart cannot reset a trailing stop back to the entry price.
+    peak_price: Mapped[float | None] = mapped_column(Float)
+
+    gross_pnl_sol: Mapped[float | None] = mapped_column(Float)
+    fees_sol: Mapped[float | None] = mapped_column(Float)
+    slippage_cost_sol: Mapped[float | None] = mapped_column(Float)
+    net_pnl_sol: Mapped[float | None] = mapped_column(Float)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
