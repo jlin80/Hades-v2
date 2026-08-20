@@ -176,6 +176,22 @@ class PaperTradingService:
                 )
                 or 0.0
             )
+            # True high-water mark, from the realised-PnL series in exit order.
+            # `max(start, now)` cannot see a peak the account reached and gave
+            # back, so every drawdown that mattered — the ones that peaked and
+            # fell — was measured against the wrong reference and understated.
+            # A window function keeps this one query rather than pulling every
+            # closed trade into the process to fold in Python.
+            running = func.sum(PaperTrade.net_pnl_sol).over(
+                order_by=(PaperTrade.exit_time, PaperTrade.id)
+            )
+            equity_series = (
+                select(running.label("running"))
+                .where(PaperTrade.state == TradeState.CLOSED)
+                .subquery()
+            )
+            best_run = await session.scalar(select(func.max(equity_series.c.running))) or 0.0
+
             open_for_token = 0
             if token_id is not None:
                 open_for_token = (
@@ -196,11 +212,13 @@ class PaperTradingService:
             open_positions=open_positions,
             open_for_token=open_for_token,
             realised_pnl_today_sol=today,
-            # Peak equity is approximated by the better of start and now. A
-            # true high-water mark needs an equity series, which Phase 7 builds;
-            # this under-reports drawdown rather than over-reporting it, and the
-            # limitation is recorded rather than hidden.
-            peak_equity_sol=max(config.starting_balance_sol, equity),
+            # The highest equity the account actually reached, not the better of
+            # its first and last value. Still realised-only: an open position
+            # sitting at a large unrealised profit does not raise the peak, so
+            # the mark moves when a trade closes rather than tick by tick.
+            peak_equity_sol=max(
+                config.starting_balance_sol, config.starting_balance_sol + best_run
+            ),
             current_equity_sol=equity,
         )
 

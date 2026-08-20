@@ -249,7 +249,10 @@ What *is* computable from t=0, at 10-second cadence, from the primary alone:
 - `token_age_seconds`
 - `price` and `market_cap` (derived from virtual reserves)
 - `liquidity` (`real_sol_reserves`)
-- `bonding_curve_progress` (derived from reserves and `total_supply`)
+- `bonding_curve_progress` — computable from the reserves, but it is two quantities and
+  not one (tokens sold and SOL raised read 65% and 33% at the same instant), and a third
+  of live tokens are not on the classic curve at all. See `DECISIONS.md` D14 and
+  `scripts/probe_bonding_curve.py`.
 - **net SOL flow** between consecutive snapshots — signed, so direction is known, but
   gross buys and gross sells are not separable from it
 - `price_velocity`, `market_cap_velocity`, `liquidity_change`, and the second

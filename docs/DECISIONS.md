@@ -220,11 +220,45 @@ of a thousand and cannot agree by accident, which is what makes that a check rat
 restatement. `test_derive.py` pins the case.
 
 **`bonding_curve_progress` is deliberately absent.** It is in §9's list, and it is
-computable — but only with curve constants that are not established for the current
-pump.fun program variant. Two plausible derivations of the same token's progress disagreed
-(33% by SOL raised, 65% by tokens remaining), so at least one constant is wrong. A progress
-figure that is quietly wrong would poison a feature; NULL does not. The raw reserves make it
-computable the moment the constants are pinned down.
+computable — but not from a single number, and the reason is not the one originally
+recorded here.
+
+*Originally recorded, and wrong:* "two plausible derivations of the same token's progress
+disagreed (33% by SOL raised, 65% by tokens remaining), so at least one constant is wrong."
+
+*Measured 2026-08-20* (`scripts/probe_bonding_curve.py`, 135 live tokens): **no constant is
+wrong, and both numbers are correct.** A token at t=0 reports exactly
+`virtual_sol = 30 SOL`, `virtual_token = 1.073e15`, `real_token = 793.1e12`. The constant
+product those imply puts graduation — `real_token_reserves → 0` — at **85.0054 SOL raised**,
+which is pump.fun's documented ~85 SOL threshold. Push 65% of the sellable supply through
+that same curve and it returns **32.6% of the SOL**. That is the reported pair, reproduced,
+with no error anywhere.
+
+The two derivations are different functions of one state, and the curve is convex, so they
+agree only at 0 and 1. Tokens leave the curve fastest while they are cheap; SOL arrives
+fastest at the end. "Progress" was the ambiguous word, not the arithmetic.
+
+So the blocker was never the constants. The two that are real, and that the probe found:
+
+1. **19 of 57 live tokens do not satisfy the classic constant product at all.** They report
+   `virtual_sol` well under 30 SOL, so a single hardcoded initial pair is wrong for roughly
+   a third of the universe — and wrong silently, since the formula still returns a number.
+2. **Not every pump pool is SOL-quoted.** A sample two hours earlier contained a
+   USDC-quoted pool (`quote_mint` = `EPjF…Dt1v`, `quote_decimals` 6) whose `market_cap` and
+   `market_cap_quote` differ by the SOL/USDC rate. `derive_market` treats the quote leg as
+   SOL at 9 decimals unconditionally, which is a live bug for those pools independent of
+   this feature.
+
+One invariant did hold for **every** non-graduated token sampled:
+`virtual_token - real_token = 279,900,000,000,000`. It is the more useful constant, because
+it does not assume a token started where the classic parameters say it did.
+
+The decision stands, with a sharper reason: a progress figure is not one feature but two,
+and shipping either as `bonding_curve_progress` would attach a name to a quantity the reader
+would guess wrong about. When it is implemented it should be as two explicitly named
+features — tokens sold, and SOL raised — and it must derive the denominator from the token's
+own first observed reserves rather than a global constant, which is possible precisely
+because this decision stored the raw reserves.
 
 ### D15 — Features are pure functions, and look-ahead is impossible by signature
 

@@ -74,13 +74,39 @@ solves. Closing it needs per-trade data: the same gap that removes half of §12'
 hypothesis.
 
 Other ways the simulation is **optimistic**, listed so a good-looking result can be
-discounted properly:
+discounted properly — and, as of 2026-08-20, sized rather than only named
+(`scripts/probe_paper_optimism.py`):
 
 * **Other traders.** The curve state is from our snapshot; real fills would move it first.
-* **Priority fees and MEV.** A real buy competes for block space. Not modelled.
-* **Failed transactions.** A real order can revert and still cost a fee.
-* **Peak equity** is approximated by `max(start, now)` rather than a true high-water mark,
-  which *under*-reports drawdown. A real equity series is Phase 7's job.
+  **This is the big one, and it was not obvious.** Measured over the 12-second gap between
+  snapshots, the curve moved on its own by a **median 15.9%** (worst observed 47.6%) on the
+  tokens that traded at all — while our own exactly-computed impact for a 0.02 SOL position
+  is **0.02%–0.07%** across the whole liquidity range. Three independent runs agreed to
+  within a factor of two.
+
+  So the slippage this system derives exactly — the thing Phase 6 is proudest of, and
+  rightly, because it removes a free parameter — is **two to three orders of magnitude
+  smaller than the drift it cannot see**. Getting slippage exactly right buys far less
+  than the snapshot interval costs. The samples were small (3–5 tokens observed twice per
+  run, because most listed tokens do not trade inside 12 seconds), so treat the ratio as an
+  order of magnitude, not a coefficient.
+
+* **Priority fees and MEV.** A real buy competes for block space. Not modelled, and **not
+  measurable from here**: observing it needs submitted transactions, and this system has no
+  signer by design (`docs/SAFETY.md`). It is an unmodelled cost per round trip, not zero.
+* **Failed transactions.** A real order can revert and still cost a fee. Unmeasurable here
+  for the same reason. The effect applies to the count of attempted entries, not to the PnL
+  of the ones that filled.
+* ~~**Peak equity** is approximated by `max(start, now)`~~ — **fixed.** That expression has
+  no memory, so an account that rose to 1.5 SOL and fell back to 1.0 reported a peak of 1.0
+  and a drawdown of *zero*: every drawdown that actually mattered, the ones that peaked and
+  gave it back, was measured against the wrong reference. `portfolio()` now computes a true
+  high-water mark over the realised-PnL series in exit order. It is still realised-only — an
+  open position sitting at a large unrealised profit does not raise the peak, so the mark
+  moves when a trade closes rather than tick by tick.
+
+The ordering of these matters for what to do next. Nothing on this list is worth engineering
+before the snapshot interval is, because the interval dominates all of them.
 
 ## What a trade records (§14)
 

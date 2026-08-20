@@ -108,7 +108,7 @@ Spec §10 lists these. None are implemented, and none can be:
 | `buyer_velocity`, `seller_velocity` | need unique trader identities |
 | `buyer_acceleration` | same |
 | `transaction_velocity`, `transaction_acceleration` | need trade counts |
-| `bonding_curve_progress` | curve constants unverified — see `DECISIONS.md` D14 |
+| `bonding_curve_progress` | ambiguous name, two different quantities — see `DECISIONS.md` D14 |
 
 Phase 1 established that no free source supplies per-trade data: GeckoTerminal has unique
 buyers but rate-limits at ~10–30 calls/min, and PumpPortal's trade stream requires an API

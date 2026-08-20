@@ -338,6 +338,49 @@ class TestPortfolio:
         assert state.realised_pnl_today_sol < 0
         assert state.current_equity_sol < 1.0
 
+    async def test_peak_equity_remembers_a_high_the_account_gave_back(
+        self, session: AsyncSession
+    ) -> None:
+        """The drawdown the old approximation could not see.
+
+        ``peak_equity_sol = max(start, now)`` has no memory: an account that
+        rose to 1.5 and fell back to 1.0 reported a peak of 1.0 and therefore a
+        drawdown of zero. Every drawdown that actually mattered — the ones that
+        peaked and gave it back — was measured against the wrong reference.
+        """
+        engine = service(session)
+        token = await TokenRepository(session).upsert(
+            DiscoveredToken(token_address=MINT, source="test", created_at=NOW)
+        )
+        del token
+
+        token_id = await session.scalar(select(Token.id).where(Token.token_address == MINT))
+        for index, (pnl, offset) in enumerate([(0.5, 1), (-0.5, 2)]):
+            session.add(
+                PaperTrade(
+                    id=uuid.uuid4(),
+                    signal_id=uuid.uuid4(),
+                    token_id=token_id,
+                    token_address=MINT,
+                    strategy="early_momentum",
+                    state=TradeState.CLOSED,
+                    decision_at=NOW,
+                    submit_at=NOW,
+                    entry_time=NOW,
+                    exit_time=NOW + timedelta(minutes=offset),
+                    position_size_sol=0.02,
+                    net_pnl_sol=pnl,
+                    exit_reason=ExitReason.TAKE_PROFIT if index == 0 else ExitReason.STOP_LOSS,
+                )
+            )
+        await session.commit()
+
+        state = await engine.portfolio(now=NOW + timedelta(minutes=5))
+
+        assert state.current_equity_sol == pytest.approx(1.0)
+        assert state.peak_equity_sol == pytest.approx(1.5)
+        assert state.drawdown_fraction == pytest.approx(1 / 3)
+
     async def test_an_open_position_reserves_its_size(self, session: AsyncSession) -> None:
         await seed(session)
         engine = service(session)
