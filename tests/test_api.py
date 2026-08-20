@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from hades import __version__
 from hades.api.app import create_app
-from hades.api.routes import NOT_IMPLEMENTED_METRICS
+from hades.api.routes import NOT_IMPLEMENTED_METRICS, PHASE
 from hades.config import Settings
 
 
@@ -49,7 +49,10 @@ def test_status_returns_null_counters_not_zero_when_database_is_down(
 
 def test_status_declares_which_metrics_do_not_exist_yet(client: TestClient) -> None:
     body = client.get("/status").json()
-    assert body["phase"] == 5
+    # Bound to the constant, not to a literal. A hardcoded 5 here is precisely
+    # what let the endpoint keep reporting phase 5 through the Phase 6 and 7
+    # merges: the test agreed with the stale value instead of catching it.
+    assert body["phase"] == PHASE
     assert set(body["not_implemented"]) == set(NOT_IMPLEMENTED_METRICS)
 
 

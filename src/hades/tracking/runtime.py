@@ -2,19 +2,19 @@
 
 Same shape as the discovery runtime, and for the same reason: ``/status`` must
 be able to tell "configured" from "actually running", because V1's dashboard
-could not and reported healthy components that were doing nothing.
+could not and reported healthy components that were doing nothing. Restarts are
+delegated to ``LoopSupervisor`` — see ``hades/supervision.py``.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 
 from hades.config import Settings
 from hades.db.engine import Database
 from hades.providers.http import ProviderHttpClient
 from hades.providers.pumpfun import BASE_URL, SOURCE, PumpFunProvider
+from hades.supervision import LoopSupervisor
 from hades.tracking.schedule import TrackingSchedule
 from hades.tracking.service import TrackingService
 
@@ -67,16 +67,19 @@ class TrackingRuntime:
 
     def __init__(self, service: TrackingService | None) -> None:
         self._service = service
-        self._task: asyncio.Task[None] | None = None
-        self._last_error: str | None = None
+        self._supervisor = LoopSupervisor("tracking", service.run) if service is not None else None
 
     @property
     def is_running(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return self._supervisor is not None and self._supervisor.is_running
 
     @property
     def last_error(self) -> str | None:
-        return self._last_error
+        return self._supervisor.last_error if self._supervisor else None
+
+    @property
+    def supervision(self) -> dict[str, object]:
+        return self._supervisor.status() if self._supervisor else {}
 
     @property
     def counters(self) -> dict[str, int]:
@@ -87,27 +90,14 @@ class TrackingRuntime:
         return self._service.estimated_requests_per_second() if self._service else None
 
     async def start(self) -> None:
-        service = self._service
-        if service is None:
+        if self._supervisor is None:
             logger.info("tracking_disabled")
             return
-        self._task = asyncio.create_task(self._supervise(service), name="tracking")
-
-    async def _supervise(self, service: TrackingService) -> None:
-        try:
-            await service.run()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            logger.exception("tracking_crashed")
+        self._supervisor.start()
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+        if self._supervisor is not None:
+            await self._supervisor.stop()
         if self._service is not None:
             await self._service.aclose()
         logger.info("tracking_stopped")

@@ -38,6 +38,11 @@ from hades.tracking.runtime import TrackingRuntime, schedule_from_settings
 
 router = APIRouter(tags=["observability"])
 
+# The last phase whose counters are expected to be present. It was left at 5
+# through the Phase 6 and 7 merges, so /status understated the system by two
+# phases while reporting paper and outcome counters that only exist at 7.
+PHASE = 7
+
 # Counters whose producing phase does not exist yet. Named explicitly so the
 # payload states its own incompleteness instead of implying zeros.
 NOT_IMPLEMENTED_METRICS: tuple[str, ...] = ()
@@ -118,6 +123,7 @@ async def status(
         running=discovery.is_running,
         last_error=discovery.last_error,
         counters=discovery.counters,
+        supervision=discovery.supervision,
     )
 
     schedule = schedule_from_settings(settings)
@@ -126,6 +132,7 @@ async def status(
         running=tracking.is_running,
         last_error=tracking.last_error,
         counters=tracking.counters,
+        supervision=tracking.supervision,
         max_concurrent=settings.tracking_max_concurrent,
         retire_after_seconds=schedule.retire_after_seconds,
         snapshots_per_token=round(schedule.snapshots_per_token(), 1),
@@ -139,6 +146,7 @@ async def status(
         running=signals.is_running,
         last_error=signals.last_error,
         counters=signals.counters,
+        supervision=signals.supervision,
         strategy=signals.strategy,
         strategy_version=signals.strategy_version,
         feature_version=FEATURE_VERSION,
@@ -149,6 +157,7 @@ async def status(
         running=paper.is_running,
         last_error=paper.last_error,
         counters=paper.counters,
+        supervision=paper.supervision,
     )
 
     outcome_status = OutcomeStatus(
@@ -156,6 +165,7 @@ async def status(
         running=outcomes.is_running,
         last_error=outcomes.last_error,
         counters=outcomes.counters,
+        supervision=outcomes.supervision,
     )
 
     tokens_discovered: int | None = None
@@ -220,11 +230,16 @@ async def status(
 
         if outcomes.service is not None:
             outcome_stats = await outcomes.service.stats()
+            signalled_final = await outcomes.service.signalled_final_count()
+            threshold = settings.research_ready_threshold
             outcome_status = outcome_status.model_copy(
                 update={
                     "outcomes_total": outcome_stats["outcomes_total"],
                     "outcomes_final": outcome_stats["outcomes_final"],
                     "observations_pending": outcome_stats["observations_pending"],
+                    "signalled_final_count": signalled_final,
+                    "research_ready_threshold": threshold,
+                    "research_ready": signalled_final >= threshold,
                 }
             )
 
@@ -233,7 +248,7 @@ async def status(
         status="healthy" if db_health.connected else "degraded",
         version=__version__,
         environment=settings.environment,
-        phase=5,
+        phase=PHASE,
         uptime_seconds=round(time.monotonic() - started_at, 3),
         database=_to_schema(db_health),
         tokens_discovered=tokens_discovered,

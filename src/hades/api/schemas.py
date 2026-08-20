@@ -21,6 +21,45 @@ class DatabaseStatus(BaseModel):
     error: str | None = None
 
 
+class SupervisionStatus(BaseModel):
+    """How the component's background loop has behaved over the process's life.
+
+    ``running`` is an instant. It cannot distinguish a loop that has been up
+    since boot from one that has crashed forty times and happens to be up right
+    now, and the second is the interesting case: discovery spent 7h20m dead on
+    CT202 behind a ``running: false`` nobody was watching, and the restart that
+    now recovers it would also have hidden the crash entirely without a count.
+    """
+
+    state: Literal["stopped", "running", "restarting"] = "stopped"
+    restarts: int = Field(
+        default=0,
+        description="Times the loop has been restarted after dying. Non-zero is a finding.",
+    )
+    last_restart_at: datetime | None = None
+
+
+class ComponentStatus(BaseModel):
+    """The four fields every background component reports, plus supervision.
+
+    Discovery, tracking, signals, paper and outcomes all had these declared
+    independently, which is how ``supervision`` would have been added to four
+    of the five.
+    """
+
+    enabled: bool
+    running: bool
+    last_error: str | None = Field(
+        default=None,
+        description=(
+            "Why the loop last died, retained across a successful restart. "
+            "Read it with `supervision.restarts`, not on its own."
+        ),
+    )
+    counters: dict[str, int] = Field(default_factory=dict)
+    supervision: SupervisionStatus = Field(default_factory=SupervisionStatus)
+
+
 class HealthResponse(BaseModel):
     """Liveness plus the one dependency we cannot work without."""
 
@@ -32,18 +71,14 @@ class HealthResponse(BaseModel):
     is_live: Literal[False] = False
 
 
-class DiscoveryStatus(BaseModel):
+class DiscoveryStatus(ComponentStatus):
     """Discovery state, all of it measured.
 
-    ``running`` is whether the background task is actually alive, not whether
-    it was configured to start. Hades V1's dashboard reported healthy components
-    that were doing nothing; the distinction is the whole point.
+    ``running`` is whether the background loop is actually executing, not
+    whether it was configured to start and not whether a supervisor is holding
+    a task open for it. Hades V1's dashboard reported healthy components that
+    were doing nothing; the distinction is the whole point.
     """
-
-    enabled: bool
-    running: bool
-    last_error: str | None = None
-    counters: dict[str, int] = Field(default_factory=dict)
 
     tokens_total: int | None = None
     tokens_by_state: dict[str, int] | None = None
@@ -66,13 +101,8 @@ class DiscoveryStatus(BaseModel):
     )
 
 
-class TrackingStatus(BaseModel):
+class TrackingStatus(ComponentStatus):
     """Tracking state, all of it measured."""
-
-    enabled: bool
-    running: bool
-    last_error: str | None = None
-    counters: dict[str, int] = Field(default_factory=dict)
 
     max_concurrent: int
     retire_after_seconds: float
@@ -110,18 +140,13 @@ class TrackingStatus(BaseModel):
     )
 
 
-class SignalStatus(BaseModel):
+class SignalStatus(ComponentStatus):
     """Signal research state.
 
     ``signals_total`` alone is not a result. It is reported next to
     ``observations_total`` because §17 asks how many signals there were, and
     that is meaningless without how many chances there were to fire.
     """
-
-    enabled: bool
-    running: bool
-    last_error: str | None = None
-    counters: dict[str, int] = Field(default_factory=dict)
 
     strategy: str | None = None
     strategy_version: str | None = None
@@ -148,13 +173,8 @@ class SignalStatus(BaseModel):
     )
 
 
-class PaperStatus(BaseModel):
+class PaperStatus(ComponentStatus):
     """Paper-trading state. Simulated fills only -- see disclaimer."""
-
-    enabled: bool
-    running: bool
-    last_error: str | None = None
-    counters: dict[str, int] = Field(default_factory=dict)
 
     balance_sol: float | None = None
     equity_sol: float | None = None
@@ -170,19 +190,33 @@ class PaperStatus(BaseModel):
     )
 
 
-class OutcomeStatus(BaseModel):
+class OutcomeStatus(ComponentStatus):
     """Outcome-labelling state (spec §15-16)."""
-
-    enabled: bool
-    running: bool
-    last_error: str | None = None
-    counters: dict[str, int] = Field(default_factory=dict)
 
     outcomes_total: int | None = None
     outcomes_final: int | None = None
     observations_pending: int | None = Field(
         default=None,
         description="Observations with no final label yet -- what the next pass still owes.",
+    )
+
+    signalled_final_count: int | None = Field(
+        default=None,
+        description=(
+            "Observations that both fired a signal and have a final outcome. This is "
+            "the only number that says whether EARLY MOMENTUM can be evaluated yet -- "
+            "`signals_total` counts signals whose outcome may still be unresolved."
+        ),
+    )
+    research_ready_threshold: int | None = None
+    research_ready: bool | None = Field(
+        default=None,
+        description=(
+            "Whether signalled_final_count has reached the threshold. Surfaced because "
+            "it was previously observable only as a one-off Discord ping: a run that "
+            "crossed the threshold while the webhook was unset, or that had already "
+            "announced before a restart, left no way to ask."
+        ),
     )
 
 
