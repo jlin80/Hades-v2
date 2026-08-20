@@ -384,9 +384,31 @@ the queue excludes tokens past the budget, and `/status` reports
 accumulates permanent failures and starves the tokens whose race simply has not resolved.
 
 **(1) and (2) remain open**, and the number that would decide between them —
-what fraction of the universe these tokens are — is still **not measured**. It becomes
-measurable as soon as collection runs for a day: `tokens_backfill_exhausted` over
-`tokens_total` is exactly that fraction.
+what fraction of the universe these tokens are — becomes measurable as soon as collection
+runs for a day: `tokens_backfill_exhausted` over `tokens_total` is exactly that fraction.
+
+### Measured 2026-08-20, after 29h of live collection on CT202
+
+```
+tokens_total              53,253
+tokens_with_created_at    53,180   (99.86%)
+tokens_backfill_exhausted     54   (0.101%)
+```
+
+**0.10% of the universe permanently lacks a `created_at`**, and 0.14% lacks one at any
+given moment (the difference being tokens whose retry budget is not yet spent). Over 29
+hours and 53k tokens the retry budget cost the dataset one token in a thousand.
+
+That settles it: **neither (1) nor (2) is worth building.** Both exist to rescue tokens the
+primary never indexes, and the population they would rescue is a rounding error next to the
+sampling this system already does deliberately — tracking admits 40 concurrent tokens out
+of ~21k created per day, so roughly 98% of the universe is declined at the tracking stage
+on purpose. Engineering a recovery path for 0.1% while 98% goes untracked by design would
+be optimising the wrong end by three orders of magnitude.
+
+Revisit only if the ratio moves. `tokens_backfill_exhausted` is on `/status` precisely so a
+change is visible without re-deriving it, and a rise would mean pump.fun's indexing
+behaviour had changed rather than that the budget was set wrong.
 
 ---
 
