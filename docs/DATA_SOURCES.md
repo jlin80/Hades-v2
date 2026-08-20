@@ -287,6 +287,36 @@ is the *elapsed time* — no amount of money later recovers tokens that were bor
 were still deciding. Option 2 can be added at any point without discarding anything
 already collected.
 
+### Resolved 2026-08-20 — option 3 is the wrong purchase, at any price
+
+Measured against the live GeckoTerminal API, and the reason is granularity rather than
+cost:
+
+**Its finest aggregation bucket is five minutes.** A pool's `transactions` object offers
+`m5`, `m15`, `m30`, `h1`, `h24`. The `signal_window` this system evaluates on is **30
+seconds**, and the hypothesis is about tokens between 30 and 300 seconds old. A 5-minute
+unique-buyer count cannot produce a 30-second feature — at t=120s the only bucket
+available *is* most of the token's life. Paying more raises the request ceiling; it does
+not subdivide the bucket.
+
+**It is also blind exactly where the hypothesis lives.** Sampling tokens by age, the
+youngest with a GeckoTerminal pool at all was **50 seconds old**; every token checked at
+11–44 s returned no pool. So the first ~50 s of a 30–300 s window is missing outright.
+
+**And the free tier's ceiling is real.** Requests spaced 2.2 s apart began returning
+HTTP 429 after eight of them — roughly the documented ~30/min. Tracking 40 concurrent
+tokens at the early-tier 10 s cadence needs **240 req/min**, an 8x gap. Any paid tier
+would have to be checked against that figure, not against a nominal one.
+
+That last point is the only one money fixes. The first two it does not.
+
+**So: option 2, not option 3.** A funded PumpPortal key delivers *raw trades*, from which
+unique buyers, unique sellers and the gross volume split are computable by us at whatever
+granularity we choose — including 30 seconds — for a one-time 0.02 SOL rather than a
+recurring bill. It is both cheaper and strictly more capable for this specific gap.
+Reconsider option 3 only if the research question changes to one that lives on a 5-minute
+scale, where the trade-off reverses.
+
 ---
 
 ## Phase 2 addendum — what running it against live sources taught us
