@@ -39,9 +39,19 @@ class Settings(BaseSettings):
     database_url: PostgresDsn = Field(
         default=PostgresDsn("postgresql+asyncpg://hades:hades@localhost:5432/hades"),
     )
-    database_pool_size: int = Field(default=5, ge=1, le=50)
-    database_pool_max_overflow: int = Field(default=5, ge=0, le=50)
-    database_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    # Sized by an outage rather than by taste. On CT202 (2 cores, vfs, a host
+    # already at load 5-6) all six background loops open connections within a
+    # second of each other at startup; a pool of 5+5 could not seat them and the
+    # ones that waited blew a 5s connect timeout 11 seconds after boot. Four of
+    # the five collectors died at once, and with no restart that made a merely
+    # slow startup permanent -- the system then sat idle for 7h20m.
+    #
+    # 10+10 seats every loop with room for /status and the heartbeat, and 30s is
+    # chosen to outlast a slow host rather than to be comfortable: failing to
+    # connect is a real outage, while waiting 30s once at boot costs nothing.
+    database_pool_size: int = Field(default=10, ge=1, le=50)
+    database_pool_max_overflow: int = Field(default=10, ge=0, le=50)
+    database_connect_timeout_seconds: float = Field(default=30.0, gt=0)
 
     # Container-internal bind; what is actually exposed is a compose concern.
     api_host: str = "0.0.0.0"
