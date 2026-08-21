@@ -18,6 +18,11 @@ RUN pip install --no-cache-dir .
 COPY src ./src
 COPY migrations ./migrations
 COPY alembic.ini ./
+# The probes and research tools. They are how a result gets reproduced, and the
+# only place they can run against the real dataset is the deployed container —
+# leaving them out meant `research_report.py` and `sweep_phase7.py` did not exist
+# on the one machine that has the data.
+COPY scripts ./scripts
 
 RUN pip install --no-cache-dir --no-deps -e . \
     && useradd --uid 1000 --create-home hades \
