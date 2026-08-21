@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from hades.discovery.repository import DiscoveryStats
 from hades.monitoring.prometheus import LoopState, render
-from hades.monitoring.stats import StatsSnapshot
+from hades.monitoring.stats import StatsService, StatsSnapshot
 from hades.signals.repository import SignalStats
 from hades.tracking.repository import TrackingStats
 
@@ -150,3 +151,85 @@ def test_metrics_endpoint_works_with_no_database(client: TestClient) -> None:
     assert response.status_code == 200
     assert "hades_database_connected 0" in response.text
     assert "hades_tokens_total" not in response.text
+
+
+async def test_the_refresh_loop_throttles_itself_when_the_queries_are_slow() -> None:
+    """Moving the aggregates off the request path must not put them on a
+    continuous one.
+
+    Measured on CT202: a 45s refresh against a 30s interval left the loop busy
+    ~60% of the time, which loads the database harder than the endpoint ever did.
+    The delay is derived from the measured duration, so it stays correct as the
+    tables grow rather than being a constant that silently stops being true.
+    """
+    delays: list[float] = []
+
+    async def record(seconds: float) -> None:
+        delays.append(seconds)
+        raise StopAsyncIteration
+
+    service = StatsService(
+        database=None,  # type: ignore[arg-type]
+        settings=None,  # type: ignore[arg-type]
+        paper_service=None,
+        outcome_service=None,
+        interval_seconds=30.0,
+        sleep=record,
+    )
+
+    slow = StatsSnapshot(
+        computed_at=NOW,
+        duration_seconds=45.0,
+        discovery=snapshot().discovery,
+        tracking=snapshot().tracking,
+        signals=snapshot().signals,
+        outcomes={},
+        signalled_final_count=0,
+        portfolio=None,
+    )
+
+    async def slow_refresh() -> StatsSnapshot:
+        return slow
+
+    service.refresh = slow_refresh  # type: ignore[method-assign]
+    with pytest.raises(StopAsyncIteration):
+        await service.run()
+
+    # 45s of work at a 25% duty cycle needs 135s of rest, not the configured 30.
+    assert delays == [135.0]
+
+
+async def test_a_fast_refresh_keeps_the_configured_interval() -> None:
+    """The throttle is a ceiling on load, not a replacement for the setting."""
+    delays: list[float] = []
+
+    async def record(seconds: float) -> None:
+        delays.append(seconds)
+        raise StopAsyncIteration
+
+    service = StatsService(
+        database=None,  # type: ignore[arg-type]
+        settings=None,  # type: ignore[arg-type]
+        paper_service=None,
+        outcome_service=None,
+        interval_seconds=30.0,
+        sleep=record,
+    )
+
+    async def fast_refresh() -> StatsSnapshot:
+        return StatsSnapshot(
+            computed_at=NOW,
+            duration_seconds=0.4,
+            discovery=snapshot().discovery,
+            tracking=snapshot().tracking,
+            signals=snapshot().signals,
+            outcomes={},
+            signalled_final_count=0,
+            portfolio=None,
+        )
+
+    service.refresh = fast_refresh  # type: ignore[method-assign]
+    with pytest.raises(StopAsyncIteration):
+        await service.run()
+
+    assert delays == [30.0]

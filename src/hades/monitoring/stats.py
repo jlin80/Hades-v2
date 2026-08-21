@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -82,7 +83,12 @@ class StatsService:
         paper_service: PaperTradingService | None,
         outcome_service: OutcomeService | None,
         interval_seconds: float,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        # Injectable for the same reason LoopSupervisor's is: a test asserting
+        # the throttle should not have to wait out a real delay, and patching
+        # asyncio.sleep globally catches the test's own yields.
+        self._sleep = sleep
         self._database = database
         self._settings = settings
         self._paper_service = paper_service
@@ -132,10 +138,31 @@ class StatsService:
         )
         return snapshot
 
+    # At most this share of wall-clock time is spent running the aggregates.
+    # A refresh measured at 45s against a 30s interval, so the loop was busy
+    # ~60% of the time -- moving the queries off the request path had quietly
+    # put them on a near-continuous one, which is heavier than the endpoint
+    # ever was. A duty cycle self-limits as the tables grow, where any fixed
+    # interval is a number that silently stops being true.
+    MAX_DUTY_CYCLE = 0.25
+
     async def run(self) -> None:
         while True:
-            await self.refresh()
-            await asyncio.sleep(self._interval_seconds)
+            snapshot = await self.refresh()
+            floor = snapshot.duration_seconds * (1 - self.MAX_DUTY_CYCLE) / self.MAX_DUTY_CYCLE
+            delay = max(self._interval_seconds, floor)
+            if delay > self._interval_seconds:
+                logger.warning(
+                    "stats_refresh_throttled",
+                    extra={
+                        "context": {
+                            "duration_seconds": snapshot.duration_seconds,
+                            "configured_interval_seconds": self._interval_seconds,
+                            "delay_seconds": round(delay, 1),
+                        }
+                    },
+                )
+            await self._sleep(delay)
 
 
 def build_stats_service(
