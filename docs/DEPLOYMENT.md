@@ -161,31 +161,41 @@ A backup job that has never produced a restorable file is not a backup.
 
 ## Prometheus on CT103
 
-**Blocked, and not on networking.** Two things have to change first:
+**Ready.** Both blockers are fixed:
 
-1. **There is no `/metrics` endpoint.** The app exposes `/health` and `/status` and nothing
-   else, so there is nothing in Prometheus format to scrape. Either add one (
-   `prometheus-client`, exporting the counters each runtime already keeps) or run
-   `json_exporter` against `/status` and map the fields.
-2. **`/status` cannot be a scrape target as it stands.** It was measured at **~14 seconds**,
-   because it runs unbounded `COUNT(*)` queries over `feature_observations` and
-   `observation_outcomes` — 100k and 300k rows — on every request. Prometheus' default
-   scrape interval is 15 s and its default timeout 10 s, so scraping `/status` would time
-   out, and doing it every 15 s would put a permanent table scan on the database the
-   collectors are writing to.
+- `/metrics` serves Prometheus text exposition, hand-rolled — no `prometheus-client`
+  dependency, for D8's reasons.
+- The expensive aggregates moved onto a 30-second refresh loop
+  (`hades.monitoring.stats`). `/status` and `/metrics` read the last snapshot, so neither
+  can trigger the `COUNT(*)` scans that made `/status` take ~14 seconds. Both report
+  `stats_age_seconds` / `hades_stats_age_seconds`, because a cached number is fine and a
+  cached number presented as live is not.
 
-   Fix the endpoint before pointing anything at it: keep the cheap counters live and either
-   cache the expensive aggregates or move them behind an explicit query parameter.
-
-Once a fast endpoint exists, the CT103 side is ordinary:
+On CT103:
 
 ```yaml
-# On CT103, prometheus.yml
 scrape_configs:
   - job_name: hades-v2
     static_configs:
       - targets: ['192.168.100.42:8000']
 ```
+
+The default 15 s interval is fine — `/metrics` touches no tables. Scraping faster than the
+30 s refresh just returns the same aggregate values twice, which `hades_stats_age_seconds`
+makes visible.
+
+### Alerts worth having
+
+| Expression | Means |
+|---|---|
+| `hades_loop_running == 0` | A collector is down or in backoff. |
+| `increase(hades_loop_restarts[1h]) > 3` | A loop is crash-looping while looking alive at any instant. |
+| `hades_snapshots_last_hour == 0` | Nothing is being collected, whatever else says. |
+| `hades_stats_age_seconds > 300` | The refresher is stuck; every aggregate below it is stale. |
+| `hades_database_latency_ms > 500` | Usually the host, not this container. |
+
+The first two are the 2026-08-19 outage expressed as queries: discovery sat at
+`running == 0` for 7h20m while four other loops reported healthy.
 
 Do **not** deploy Prometheus/Grafana on CT202 — they already run on CT103, and V1's
 observability profile was never brought up, which is why nobody read the histograms that

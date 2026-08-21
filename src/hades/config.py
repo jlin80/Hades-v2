@@ -200,6 +200,16 @@ class Settings(BaseSettings):
     # lifetime once it has fired.
     research_ready_threshold: int = Field(default=100, ge=1)
 
+    # How often the expensive database aggregates behind /status and /metrics are
+    # recomputed. They were being run per request, which measured at ~14s on
+    # CT202 -- unbounded COUNT(*) over 173k observations and 520k outcomes -- so
+    # asking how the system was doing put a table scan on the database the
+    # collectors were writing to, and made a Prometheus scrape impossible.
+    # 30s is below Prometheus' default 15s scrape only in the sense that a
+    # scraper will sometimes see the same numbers twice; that is much cheaper
+    # than the alternative, and the age is reported so nobody has to guess.
+    stats_refresh_interval_seconds: float = Field(default=30.0, gt=0)
+
     provider_timeout_seconds: float = Field(default=10.0, gt=0)
     provider_max_attempts: int = Field(default=3, ge=1, le=10)
     provider_max_connections: int = Field(default=10, ge=1, le=100)

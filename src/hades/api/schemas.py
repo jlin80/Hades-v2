@@ -250,6 +250,15 @@ class StatusResponse(BaseModel):
     paper: PaperStatus
     outcomes: OutcomeStatus
 
+    stats_age_seconds: float | None = Field(
+        default=None,
+        description=(
+            "How old the database aggregates in this payload are. They are refreshed on a "
+            "clock rather than per request, because computing them inline measured at ~14s. "
+            "Null means the first refresh has not completed -- not that they are zero."
+        ),
+    )
+
     not_implemented: list[str] = Field(
         default_factory=list,
         description="Metrics deliberately absent because their phase has not been built.",

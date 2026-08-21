@@ -21,6 +21,8 @@ from hades.db.engine import Database
 from hades.discovery.runtime import DiscoveryRuntime, build_service
 from hades.logging import configure_logging
 from hades.monitoring.heartbeat import HeartbeatRuntime, build_heartbeat_service
+from hades.monitoring.runtime import StatsRuntime
+from hades.monitoring.stats import build_stats_service
 from hades.outcomes.runtime import OutcomeRuntime, build_outcome_service
 from hades.paper.runtime import PaperRuntime, build_paper_service
 from hades.signals.runtime import SignalRuntime, build_signal_service
@@ -117,6 +119,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.outcomes = outcomes
         await outcomes.start()
 
+        # Feeds /status and /metrics. Started before the heartbeat because the
+        # heartbeat is the only other reader of these aggregates.
+        stats = StatsRuntime(
+            build_stats_service(database, resolved, paper_service, outcome_service)
+            if health.connected
+            else None
+        )
+        app.state.stats = stats
+        await stats.start()
+
         # Independent of every feature above: reports whatever is currently
         # true, even if paper trading itself is disabled.
         heartbeat_service = (
@@ -134,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await heartbeat.stop()
+            await stats.stop()
             await outcomes.stop()
             await paper.stop()
             await signals.stop()
