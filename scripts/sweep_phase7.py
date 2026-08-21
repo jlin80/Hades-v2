@@ -50,6 +50,10 @@ from hades.outcomes.service import OutcomeService
 from hades.research.analytics import LabelledRecord
 from hades.research.sweep import BarrierResult, evaluate_barriers
 
+# Above the current row count, deliberately. dataset()'s own default is 100_000,
+# which is under it and truncates without saying so.
+DATASET_LIMIT = 2_000_000
+
 TAKE_PROFITS: tuple[float, ...] = (0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.00)
 STOP_LOSSES: tuple[float, ...] = (0.05, 0.10, 0.15, 0.20, 0.30)
 
@@ -160,12 +164,25 @@ async def main(database_arg: str, label_config: str) -> None:
     database = FileDatabase(url)
     try:
         service = OutcomeService(database)  # type: ignore[arg-type]
-        records = await service.dataset(label_config=label_config)
+        records = await service.dataset(label_config=label_config, limit=DATASET_LIMIT)
         stats = await service.stats()
     finally:
         await database.dispose()
 
     print(f"label_config={label_config}  records={len(records)}")
+    if len(records) >= DATASET_LIMIT:
+        # The first run of this sweep silently swept 100,000 of 176,834 rows and
+        # 63 of 134 signals, because dataset() takes a limit and has no ORDER BY.
+        # The rows it returns are therefore whatever the planner emits first --
+        # in practice the oldest -- so the truncation is not a random sample, it
+        # is a date filter nobody chose. Loud rather than a footnote.
+        print("\n" + "!" * 100)
+        print("TRUNCATED DATASET -- these numbers describe a subset, not the run.")
+        print(f"  dataset() returned exactly its limit of {DATASET_LIMIT} rows, so there are more.")
+        print("  There is no ORDER BY behind it, so the rows you got are not a random sample")
+        print("  of the run; they are whichever ones the query emitted first. Raise")
+        print("  DATASET_LIMIT above the row count and rerun before reading anything below.")
+        print("!" * 100)
     if not records:
         print("Nothing to sweep. Collect a dataset first.")
         return
